@@ -3,6 +3,7 @@ import DashboardPage from './pages/DashboardPage'
 import ExportImportPage from './pages/ExportImportPage'
 import HistoriePage from './pages/HistoriePage'
 import StammdatenPage from './pages/StammdatenPage'
+import { useAppStore } from './store/appStore'
 
 type RoutePath = '/' | '/stammdaten' | '/historie' | '/export-import'
 
@@ -21,6 +22,12 @@ const normalizePath = (value: string): RoutePath => {
 
 function App() {
   const [path, setPath] = useState<RoutePath>(() => normalizePath(window.location.pathname))
+  const {
+    state: {
+      meta: { lastError },
+    },
+    clearError,
+  } = useAppStore()
 
   useEffect(() => {
     const onPopState = () => {
@@ -72,7 +79,19 @@ function App() {
         </nav>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl p-6 md:p-8">{page}</main>
+      <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-6 md:p-8">
+        {lastError ? (
+          <div className="rounded-lg border border-red-500 bg-red-950/60 px-4 py-3 text-sm">
+            <div className="flex items-start justify-between gap-4">
+              <p>Aktion blockiert: {lastError}</p>
+              <button className="text-xs font-semibold" onClick={clearError} type="button">
+                Schließen
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {page}
+      </main>
     </div>
   )
 }
