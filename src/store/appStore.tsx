@@ -6,6 +6,7 @@ import type {
   HistoryEventType,
   MasterdataState,
   Order,
+  SchedulingSettingsState,
 } from './types'
 import { getOrderRwWindow, hasOverlap } from './scheduling'
 
@@ -33,33 +34,45 @@ const minutesForOrder = (order: Order) => {
   return Math.max(order.quantity / order.lineRate, 0)
 }
 
-const withReflowForLine = (orders: Order[], lineId: string): Order[] => {
+const isValidShiftStartTime = (value: string) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(value)
+
+const sanitizeSettings = (input?: Partial<SchedulingSettingsState>): SchedulingSettingsState => ({
+  shiftStartTime: isValidShiftStartTime(input?.shiftStartTime ?? '') ? input!.shiftStartTime! : '06:00',
+})
+
+const getShiftAnchorMs = (shiftStartTime: string) => {
+  const [hours, minutes] = shiftStartTime.split(':').map((value) => Number(value))
+  const anchor = new Date()
+  anchor.setHours(Number.isFinite(hours) ? hours : 6, Number.isFinite(minutes) ? minutes : 0, 0, 0)
+  return anchor.getTime()
+}
+
+const withReflowForLine = (orders: Order[], lineId: string, shiftStartTime: string): Order[] => {
   const lineOrders = orders
     .filter((order) => order.lineId === lineId && activeStatuses.includes(order.status))
     .sort((a, b) => (a.sequence === b.sequence ? a.id.localeCompare(b.id) : a.sequence - b.sequence))
 
   if (!lineOrders.length) return orders
 
-  const firstFixed = lineOrders.find((order) => order.startPolicy === 'fixed' && order.startTime)
-  let cursorMs = firstFixed ? Date.parse(firstFixed.startTime) : Number.NaN
-
-  if (Number.isNaN(cursorMs)) {
-    cursorMs = Date.now()
-  }
-
-  const updates = new Map<string, Pick<Order, 'fillStart' | 'fillEnd' | 'sequence'>>()
+  let cursorMs = getShiftAnchorMs(shiftStartTime)
+  const updates = new Map<string, Pick<Order, 'fillStart' | 'fillEnd' | 'sequence' | 'manualStartWarning'>>()
 
   lineOrders.forEach((order, index) => {
     const durationMs = minutesForOrder(order) * 60_000
-    const fillStart = toDateTimeLocal(new Date(cursorMs))
-    const fillEnd = toDateTimeLocal(new Date(cursorMs + durationMs))
+    const manualStartMs = order.startTime ? Date.parse(order.startTime) : Number.NaN
+    const hasManualStart = Number.isFinite(manualStartMs)
+    const manualStartWarning = Boolean(hasManualStart && manualStartMs < cursorMs)
+    const fillStartMs = hasManualStart ? Math.max(cursorMs, manualStartMs) : cursorMs
+    const fillStart = toDateTimeLocal(new Date(fillStartMs))
+    const fillEnd = toDateTimeLocal(new Date(fillStartMs + durationMs))
 
     updates.set(order.id, {
       fillStart,
       fillEnd,
       sequence: index + 1,
+      manualStartWarning,
     })
-    cursorMs += durationMs
+    cursorMs = fillStartMs + durationMs
   })
 
   return orders.map((order) => {
@@ -94,6 +107,9 @@ const initialState: AppState = {
   meta: {
     usedOrderNumbers: [],
     lastError: null,
+  },
+  settings: {
+    shiftStartTime: '06:00',
   },
 }
 
@@ -150,6 +166,7 @@ const sanitizeOrders = (orders: Order[], masterdata: MasterdataState): Order[] =
       sequence: order.sequence ?? 0,
       fillStart: order.fillStart,
       fillEnd: order.fillEnd,
+      manualStartWarning: order.manualStartWarning ?? false,
       status: ['planned', 'made', 'running', 'done'].includes(order.status) ? order.status : 'planned',
       actualQuantity: order.actualQuantity ?? 0,
     }
@@ -175,6 +192,7 @@ const mergeState = (parsed: Partial<AppState> & { masterdata?: Partial<Masterdat
       ...parsed.meta,
       usedOrderNumbers: Array.from(new Set(parsed.meta?.usedOrderNumbers ?? [])),
     },
+    settings: sanitizeSettings(parsed.settings),
   }
 }
 
@@ -221,6 +239,7 @@ interface StoreContextValue {
   unassignOrder: (orderId: string) => ActionResult
   reportIst: (orderId: string, input: { actualQuantity?: number; remainingQuantity?: number }) => ActionResult
   updateMasterdata: (masterdata: MasterdataState) => ActionResult
+  updateSettings: (settings: Partial<SchedulingSettingsState>) => ActionResult
   importData: (rawJson: string) => ActionResult
   exportData: () => string
 }
@@ -325,7 +344,6 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     if (input.quantity <= 0) return fail('Menge muss größer als 0 sein.')
     if (!line) return fail('Linie ist ungültig.')
     if (rate <= 0) return fail('Die Linienrate für das gewählte Gebinde muss größer als 0 sein.')
-    if (input.startPolicy === 'fixed' && !input.startTime) return fail('Startzeit ist für Start-Policy "Fix" erforderlich.')
     if (!startPosition) return fail('Startposition ist erforderlich.')
 
     let orderNo = rawOrderNo
@@ -359,7 +377,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           lineName: line.name,
           lineRate: rate,
           startTime: input.startTime,
-          startPolicy: input.startPolicy,
+          startPolicy: input.startTime ? 'fixed' : 'asap',
           startPosition,
           sequence: prev.orders.filter((order) => order.lineId === line.lineId).length + 1,
           status: 'planned',
@@ -374,7 +392,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       history: [...prev.history, historyMessage('CREATE', `Auftrag ${orderNo} erstellt (${line.name}, ${input.quantity} ${input.packageSize}).`, { orderNo, productId: input.productId })],
     }))
 
-    commit((prev) => ({ ...prev, orders: withReflowForLine(prev.orders, line.lineId) }))
+    commit((prev) => ({ ...prev, orders: withReflowForLine(prev.orders, line.lineId, prev.settings.shiftStartTime) }))
 
     return { ok: true }
   }
@@ -415,6 +433,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
             : item,
         ),
         order.lineId,
+        prev.settings.shiftStartTime,
       ),
       meta: { ...prev.meta, lastError: null },
       history: [...prev.history, historyMessage('EDIT', `Auftrag ${order.orderNo} bearbeitet (Karte).`, { orderNo: order.orderNo, productId: nextProduct.productId })],
@@ -462,7 +481,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         return index === -1 ? order : { ...order, sequence: index + 1 }
       })
 
-      const reflown = withReflowForLine(mapped, lineId)
+      const reflown = withReflowForLine(mapped, lineId, prev.settings.shiftStartTime)
       const lineName = prev.masterdata.lines.find((line) => line.lineId === lineId)?.name ?? lineId
 
       return {
@@ -561,7 +580,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           : item,
       )
 
-      const reflown = withReflowForLine(updatedOrders, order.lineId)
+      const reflown = withReflowForLine(updatedOrders, order.lineId, prev.settings.shiftStartTime)
 
       return {
         ...prev,
@@ -592,6 +611,32 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       meta: { ...prev.meta, lastError: null },
       history: [...prev.history, historyMessage('MASTERDATA', 'Stammdaten aktualisiert.')],
     }))
+    return { ok: true }
+  }
+
+  const updateSettings: StoreContextValue['updateSettings'] = (settings) => {
+    const sanitized = sanitizeSettings(settings)
+
+    commit((prev) => {
+      if (prev.settings.shiftStartTime === sanitized.shiftStartTime) {
+        return { ...prev, meta: { ...prev.meta, lastError: null } }
+      }
+
+      const lineIds = Array.from(new Set(prev.orders.map((order) => order.lineId)))
+      let reflownOrders = prev.orders
+      for (const lineId of lineIds) {
+        reflownOrders = withReflowForLine(reflownOrders, lineId, sanitized.shiftStartTime)
+      }
+
+      return {
+        ...prev,
+        settings: sanitized,
+        orders: reflownOrders,
+        meta: { ...prev.meta, lastError: null },
+        history: [...prev.history, historyMessage('SETTINGS', `Planungs-Settings aktualisiert (shiftStartTime: ${sanitized.shiftStartTime}).`)],
+      }
+    })
+
     return { ok: true }
   }
 
@@ -646,6 +691,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       unassignOrder,
       reportIst,
       updateMasterdata,
+      updateSettings,
       importData,
       exportData,
     }),
