@@ -36,6 +36,11 @@ interface TimelineBlock {
   tone: 'solid' | 'ghost'
 }
 
+interface RwTimelineEntry {
+  order: StoreOrder
+  window: NonNullable<ReturnType<typeof getOrderRwWindow>>
+}
+
 type TimelineRange = { min: number; max: number } | null
 
 const parseMs = (value?: string) => (value ? Date.parse(value) : Number.NaN)
@@ -114,7 +119,7 @@ function DashboardPage() {
           if (!window) return null
           return { order, window }
         })
-        .filter((entry): entry is { order: StoreOrder; window: NonNullable<ReturnType<typeof getOrderRwWindow>> } => Boolean(entry))
+        .filter((entry): entry is RwTimelineEntry => Boolean(entry))
         .sort((a, b) => a.window.makeStart.localeCompare(b.window.makeStart)),
     }))
   }, [state.assignments, state.masterdata, state.orders])
@@ -267,7 +272,7 @@ function DashboardPage() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {boardColumns.map((lineColumn) => (
               <article key={lineColumn.lineId} className="rounded border border-slate-700 bg-slate-900/70 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropCard(event, lineColumn)}>
-                <h3 className="font-semibold text-cyan-300">{lineColumn.lineName}</h3>
+                <h3 className="font-semibold text-cyan-300">{lineColumn.lineName} · Aufträge</h3>
                 <div className="mt-3 max-h-[22rem] space-y-2 overflow-y-auto pr-1">
                   {lineColumn.orders.length === 0 ? <EmptyColumn /> : lineColumn.orders.map((order) => (
                     <OrderCard
@@ -281,14 +286,22 @@ function DashboardPage() {
                       onDrop={(event) => onDropCard(event, lineColumn, order.id)}
                       onEdit={(updates) => editOrder(order.id, updates)}
                       onAssign={(rwId) => assignOrder(order.id, rwId)}
-                      onStatusChange={(status) => moveOrder(order.id, status)}
                     />
                   ))}
                 </div>
-                <SingleTrackTimeline title="LineTimeline" entries={lineEvents.get(lineColumn.lineId) ?? []} range={timelineRange} />
               </article>
             ))}
           </div>
+          <article className="mt-4 rounded border border-slate-700 bg-slate-900/70 p-3">
+            <h3 className="font-semibold text-cyan-300">Linien-Zeitachsen</h3>
+            <div className="mt-3 space-y-3">
+              {boardColumns.map((lineColumn) => (
+                <div key={`${lineColumn.lineId}-timeline`}>
+                  <SingleTrackTimeline title={`Zeitachse ${lineColumn.lineName}`} entries={lineEvents.get(lineColumn.lineId) ?? []} range={timelineRange} fixedHeight />
+                </div>
+              ))}
+            </div>
+          </article>
         </div>
 
         <div className="rounded-xl border border-slate-700 bg-slate-800 p-5">
@@ -308,7 +321,12 @@ function DashboardPage() {
                 <div className="mt-3 space-y-2">
                   {entries.length === 0 ? <p className="text-sm text-slate-500">Keine Belegung.</p> : entries.map(({ order, window }) => (
                     <div key={order.id} className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
-                      <p className="font-semibold text-slate-100">{order.orderNo}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-semibold text-slate-100">{order.orderNo}</p>
+                        <select value={order.status} onChange={(event) => moveOrder(order.id, event.target.value as StatusValue)} className="rounded bg-slate-700 px-2 py-1 text-[11px] text-slate-100">
+                          {statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                        </select>
+                      </div>
                       <p className="text-slate-400">Sperrbereich: {window.makeStart} → {window.fillEnd}</p>
                     </div>
                   ))}
@@ -326,12 +344,14 @@ const SingleTrackTimeline = memo(function SingleTrackTimeline({
   title,
   entries,
   range,
+  fixedHeight,
   onDragOver,
   onDrop,
 }: {
-  title: 'LineTimeline' | 'RWTimeline'
+  title: string
   entries: TimelineBlock[]
   range: TimelineRange
+  fixedHeight?: boolean
   onDragOver?: (event: DragEvent<HTMLDivElement>) => void
   onDrop?: (event: DragEvent<HTMLDivElement>) => void
 }) {
@@ -350,24 +370,26 @@ const SingleTrackTimeline = memo(function SingleTrackTimeline({
   return (
     <div className="mt-3 rounded border border-slate-700 bg-slate-950/70 p-2" onDragOver={onDragOver} onDrop={onDrop}>
       <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">{title}</p>
-      <div className="relative h-10">
-        {entries.map((entry) => {
-          const start = parseMs(entry.start)
-          const end = parseMs(entry.end)
-          if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
-          const left = ((start - range.min) / width) * 100
-          const blockWidth = Math.max(((end - start) / width) * 100, 2)
-          return (
-            <div
-              key={entry.id}
-              className={`absolute top-1 h-8 overflow-hidden rounded px-1 text-[10px] ${entry.tone === 'ghost' ? 'border border-dashed border-cyan-300 bg-cyan-300/20 text-cyan-200' : 'bg-amber-500/60 text-slate-900'}`}
-              style={{ left: `${left}%`, width: `${Math.min(blockWidth, 100 - left)}%` }}
-              title={`${entry.label}: ${entry.start} → ${entry.end}`}
-            >
-              {entry.label}
-            </div>
-          )
-        })}
+      <div className="overflow-x-auto pb-1">
+        <div className={`relative min-w-[42rem] ${fixedHeight ? 'h-16' : 'h-10'}`}>
+          {entries.map((entry) => {
+            const start = parseMs(entry.start)
+            const end = parseMs(entry.end)
+            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
+            const left = ((start - range.min) / width) * 100
+            const blockWidth = Math.max(((end - start) / width) * 100, 2)
+            return (
+              <div
+                key={entry.id}
+                className={`absolute top-1 h-8 overflow-hidden rounded px-1 text-[10px] ${entry.tone === 'ghost' ? 'border border-dashed border-cyan-300 bg-cyan-300/20 text-cyan-200' : 'bg-amber-500/60 text-slate-900'}`}
+                style={{ left: `${left}%`, width: `${Math.min(blockWidth, 100 - left)}%` }}
+                title={`${entry.label}: ${entry.start} → ${entry.end}`}
+              >
+                {entry.label}
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -383,7 +405,6 @@ const OrderCard = memo(function OrderCard({
   onDrop,
   onEdit,
   onAssign,
-  onStatusChange,
 }: {
   order: StoreOrder
   products: StoreState['masterdata']['products']
@@ -394,7 +415,6 @@ const OrderCard = memo(function OrderCard({
   onDrop: (event: DragEvent<HTMLDivElement>) => void
   onEdit: (updates: Partial<Pick<StoreOrder, 'quantity' | 'packageSize' | 'productId'>>) => void
   onAssign: (rwId: string) => void
-  onStatusChange: (status: StatusValue) => void
 }) {
   const [selectedRw, setSelectedRw] = useState(assignedRwId ?? stirrers[0]?.rwId ?? '')
   const [expanded, setExpanded] = useState(false)
@@ -433,7 +453,6 @@ const OrderCard = memo(function OrderCard({
           <p className="col-span-2 text-xs text-slate-400">Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}</p>
           {order.manualStartWarning ? <p className="col-span-2 inline-flex rounded bg-amber-500/20 px-2 py-1 text-[11px] text-amber-200">⚠ Manuelle Startzeit lag vor möglichem Start</p> : null}
           <p className="col-span-2 text-xs text-amber-300">RW: {assignedRwId ?? 'nicht zugewiesen'}</p>
-          <label className="text-xs text-slate-300">Status<select value={order.status} onChange={(event) => onStatusChange(event.target.value as StatusValue)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           <label className="text-xs text-slate-300">Menge<input type="number" min={1} value={order.quantity} onChange={(event) => { const next = Number(event.target.value); if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next }) }} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
           <label className="text-xs text-slate-300">Gebinde<select value={order.packageSize} onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           <label className="col-span-2 text-xs text-slate-300">Produkt<select value={order.productId} onChange={(event) => onEdit({ productId: event.target.value })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{products.map((product) => <option key={product.productId} value={product.productId}>{product.name} ({product.articleNo})</option>)}</select></label>
