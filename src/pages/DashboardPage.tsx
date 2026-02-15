@@ -54,7 +54,7 @@ function DashboardPage() {
                       {order.orderNo} · {order.title}
                     </p>
                     <p className="text-sm text-slate-300">
-                      Status: {order.status} · IST: {order.actualQuantity} · Maschine: {assignment?.machine ?? '—'}
+                      Status: {order.status} · IST: {order.actualQuantity} · Linie: {assignment?.machine ?? '—'}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2 text-xs">
@@ -67,7 +67,7 @@ function DashboardPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => assignOrder(order.id, state.masterdata.machines[0])}
+                      onClick={() => state.masterdata.lines[0] && assignOrder(order.id, state.masterdata.lines[0].name)}
                       className="rounded bg-slate-700 px-2 py-1"
                     >
                       Assign

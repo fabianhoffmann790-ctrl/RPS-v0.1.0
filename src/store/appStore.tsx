@@ -1,6 +1,12 @@
 import { createContext, useContext, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { ActionResult, AppState, HistoryEventType, Order } from './types'
+import type {
+  ActionResult,
+  AppState,
+  HistoryEventType,
+  MasterdataState,
+  Order,
+} from './types'
 
 const STORAGE_KEY = 'rps-store-v2'
 
@@ -11,8 +17,23 @@ const createId = () =>
 
 const initialState: AppState = {
   masterdata: {
-    machines: ['Maschine-A', 'Maschine-B'],
-    materials: ['Standard'],
+    products: [
+      {
+        productId: 'P-STD',
+        name: 'Standardprodukt',
+        articleNo: 'ART-001',
+        makeTimeMinPerL: 0.5,
+      },
+    ],
+    lines: [
+      {
+        lineId: 'L-A',
+        name: 'Linie A',
+        rates: { l250MlPerMin: 120, l500MlPerMin: 100, l1000MlPerMin: 70, l5000MlPerMin: 25 },
+      },
+    ],
+    stirrers: [{ rwId: 'RW-1', name: 'Rührwerk 1' }],
+    bufferMin: 30,
   },
   orders: [],
   assignments: [],
@@ -23,13 +44,40 @@ const initialState: AppState = {
   },
 }
 
-const mergeState = (parsed: Partial<AppState>): AppState => ({
+const sanitizeMasterdata = (input?: Partial<MasterdataState> & { machines?: string[] }): MasterdataState => {
+  const legacyLines = (input?.machines ?? []).map((name, index) => ({
+    lineId: `L-LEGACY-${index + 1}`,
+    name,
+    rates: { l250MlPerMin: 0, l500MlPerMin: 0, l1000MlPerMin: 0, l5000MlPerMin: 0 },
+  }))
+
+  return {
+    products: (input?.products ?? initialState.masterdata.products).map((product) => ({
+      ...product,
+      productId: product.productId.trim(),
+      name: product.name.trim(),
+      articleNo: product.articleNo.trim(),
+    })),
+    lines: (input?.lines?.length ? input.lines : legacyLines.length ? legacyLines : initialState.masterdata.lines).map(
+      (line) => ({
+        ...line,
+        lineId: line.lineId.trim(),
+        name: line.name.trim(),
+      }),
+    ),
+    stirrers: (input?.stirrers ?? initialState.masterdata.stirrers).map((stirrer) => ({
+      ...stirrer,
+      rwId: stirrer.rwId.trim(),
+      name: stirrer.name.trim(),
+    })),
+    bufferMin: input?.bufferMin,
+  }
+}
+
+const mergeState = (parsed: Partial<AppState> & { masterdata?: Partial<MasterdataState> & { machines?: string[] } }): AppState => ({
   ...initialState,
   ...parsed,
-  masterdata: {
-    ...initialState.masterdata,
-    ...parsed.masterdata,
-  },
+  masterdata: sanitizeMasterdata(parsed.masterdata),
   orders: parsed.orders ?? [],
   assignments: parsed.assignments ?? [],
   history: parsed.history ?? [],
@@ -63,7 +111,7 @@ interface StoreContextValue {
   assignOrder: (orderId: string, machine: string) => ActionResult
   unassignOrder: (orderId: string) => ActionResult
   reportIst: (orderId: string, actualQuantity: number) => ActionResult
-  addMachine: (machine: string) => ActionResult
+  updateMasterdata: (masterdata: MasterdataState) => ActionResult
   importData: (rawJson: string) => ActionResult
   exportData: () => string
 }
@@ -76,6 +124,52 @@ const historyMessage = (type: HistoryEventType, message: string) => ({
   message,
   timestamp: new Date().toISOString(),
 })
+
+const hasUnique = (values: string[]) => new Set(values).size === values.length
+
+const validateMasterdata = (masterdata: MasterdataState): string | null => {
+  if (!masterdata.products.length) return 'Mindestens ein Produkt ist erforderlich.'
+  if (!masterdata.lines.length) return 'Mindestens eine Linie ist erforderlich.'
+  if (!masterdata.stirrers.length) return 'Mindestens ein Rührwerk ist erforderlich.'
+
+  const productIds = masterdata.products.map((item) => item.productId)
+  const articleNos = masterdata.products.map((item) => item.articleNo)
+  const lineIds = masterdata.lines.map((item) => item.lineId)
+  const lineNames = masterdata.lines.map((item) => item.name)
+  const rwIds = masterdata.stirrers.map((item) => item.rwId)
+
+  if (!hasUnique(productIds)) return 'Produkt-IDs müssen eindeutig sein.'
+  if (!hasUnique(articleNos)) return 'Artikelnummern müssen eindeutig sein.'
+  if (!hasUnique(lineIds)) return 'Linien-IDs müssen eindeutig sein.'
+  if (!hasUnique(lineNames)) return 'Liniennamen müssen eindeutig sein.'
+  if (!hasUnique(rwIds)) return 'Rührwerks-IDs müssen eindeutig sein.'
+
+  for (const product of masterdata.products) {
+    if (!product.productId || !product.name || !product.articleNo) {
+      return 'Produkte benötigen productId, Name und articleNo.'
+    }
+    if (product.makeTimeMinPerL <= 0) return `makeTimeMinPerL muss > 0 sein (${product.productId}).`
+    if (product.viscosity !== undefined && product.viscosity < 0) return `Viskosität darf nicht negativ sein (${product.productId}).`
+    if (product.fillFactor !== undefined && product.fillFactor <= 0) return `fillFactor muss > 0 sein (${product.productId}).`
+    if (product.bufferMin !== undefined && product.bufferMin < 0) return `bufferMin darf nicht negativ sein (${product.productId}).`
+  }
+
+  for (const line of masterdata.lines) {
+    if (!line.lineId || !line.name) return 'Linien benötigen lineId und Namen.'
+    const rates = Object.values(line.rates)
+    if (rates.some((rate) => rate <= 0)) return `Alle Linienraten müssen > 0 sein (${line.lineId}).`
+  }
+
+  for (const stirrer of masterdata.stirrers) {
+    if (!stirrer.rwId || !stirrer.name) return 'Rührwerke benötigen rwId und Namen.'
+  }
+
+  if (masterdata.bufferMin !== undefined && masterdata.bufferMin < 0) {
+    return 'Globaler bufferMin darf nicht negativ sein.'
+  }
+
+  return null
+}
 
 export function AppStoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(() => loadState())
@@ -152,7 +246,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const assignOrder: StoreContextValue['assignOrder'] = (orderId, machine) => {
     const order = state.orders.find((item) => item.id === orderId)
     if (!order) return fail('Auftrag nicht gefunden.')
-    if (!state.masterdata.machines.includes(machine)) return fail('Maschine unbekannt.')
+    if (!state.masterdata.lines.some((line) => line.name === machine)) return fail('Linie unbekannt.')
 
     commit((prev) => ({
       ...prev,
@@ -190,16 +284,16 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     return { ok: true }
   }
 
-  const addMachine: StoreContextValue['addMachine'] = (machine) => {
-    const normalized = machine.trim()
-    if (!normalized) return fail('Maschinenname ist erforderlich.')
-    if (state.masterdata.machines.includes(normalized)) return fail('Maschine existiert bereits.')
+  const updateMasterdata: StoreContextValue['updateMasterdata'] = (masterdata) => {
+    const sanitized = sanitizeMasterdata(masterdata)
+    const validationError = validateMasterdata(sanitized)
+    if (validationError) return fail(validationError)
 
     commit((prev) => ({
       ...prev,
-      masterdata: { ...prev.masterdata, machines: [...prev.masterdata.machines, normalized] },
+      masterdata: sanitized,
       meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('MASTERDATA', `Maschine ${normalized} hinzugefügt.`)],
+      history: [...prev.history, historyMessage('MASTERDATA', 'Stammdaten aktualisiert.')],
     }))
     return { ok: true }
   }
@@ -243,7 +337,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       assignOrder,
       unassignOrder,
       reportIst,
-      addMachine,
+      updateMasterdata,
       importData,
       exportData,
     }),

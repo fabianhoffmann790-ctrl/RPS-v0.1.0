@@ -9,9 +9,39 @@ export type HistoryEventType =
   | 'IMPORT'
   | 'EXPORT'
 
+export interface Product {
+  productId: string
+  name: string
+  articleNo: string
+  viscosity?: number
+  makeTimeMinPerL: number
+  fillFactor?: number
+  bufferMin?: number
+}
+
+export interface LineRates {
+  l250MlPerMin: number
+  l500MlPerMin: number
+  l1000MlPerMin: number
+  l5000MlPerMin: number
+}
+
+export interface Line {
+  lineId: string
+  name: string
+  rates: LineRates
+}
+
+export interface Stirrer {
+  rwId: string
+  name: string
+}
+
 export interface MasterdataState {
-  machines: string[]
-  materials: string[]
+  products: Product[]
+  lines: Line[]
+  stirrers: Stirrer[]
+  bufferMin?: number
 }
 
 export interface Order {
