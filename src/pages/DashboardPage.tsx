@@ -10,10 +10,6 @@ const packageOptions = [
   { value: '5l', label: '5 L' },
 ] as const
 
-const startPolicyOptions = [
-  { value: 'asap', label: 'ASAP' },
-  { value: 'fixed', label: 'Fix' },
-] as const
 
 const statusOptions = [
   { value: 'planned', label: 'planned' },
@@ -23,7 +19,6 @@ const statusOptions = [
 ] as const
 
 type PackageValue = (typeof packageOptions)[number]['value']
-type StartPolicyValue = (typeof startPolicyOptions)[number]['value']
 type StatusValue = (typeof statusOptions)[number]['value']
 type StoreState = ReturnType<typeof useAppStore>['state']
 type StoreOrder = StoreState['orders'][number]
@@ -45,8 +40,8 @@ function DashboardPage() {
   const [quantity, setQuantity] = useState('')
   const [packageSize, setPackageSize] = useState<PackageValue>('1l')
   const [lineId, setLineId] = useState(state.masterdata.lines[0]?.lineId ?? '')
-  const [startTime, setStartTime] = useState('')
-  const [startPolicy, setStartPolicy] = useState<StartPolicyValue>('asap')
+  const [manualStartEnabled, setManualStartEnabled] = useState(false)
+  const [manualStartTime, setManualStartTime] = useState('')
   const [startPosition, setStartPosition] = useState('')
   const [dragOrderId, setDragOrderId] = useState<string | null>(null)
 
@@ -126,8 +121,8 @@ function DashboardPage() {
       packageSize,
       lineId,
       lineName: state.masterdata.lines.find((line) => line.lineId === lineId)?.name ?? '',
-      startTime,
-      startPolicy,
+      startTime: manualStartEnabled ? manualStartTime : '',
+      startPolicy: manualStartEnabled && manualStartTime ? 'fixed' : 'asap',
       startPosition,
     })
 
@@ -136,8 +131,8 @@ function DashboardPage() {
       setOrderNo('')
       setQuantity('')
       setPackageSize('1l')
-      setStartTime('')
-      setStartPolicy('asap')
+      setManualStartEnabled(false)
+      setManualStartTime('')
       setStartPosition('')
     }
   }
@@ -192,13 +187,12 @@ function DashboardPage() {
         <label className="text-sm text-slate-300">Optionale Auftragsnummer
           <input className="w-full rounded bg-slate-700 px-3 py-2" value={orderNo} onChange={(event) => setOrderNo(event.target.value)} />
         </label>
-        <label className="text-sm text-slate-300">Startzeit (für Fix-Policy)
-          <input type="datetime-local" className="w-full rounded bg-slate-700 px-3 py-2" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
-        </label>
-        <label className="text-sm text-slate-300">Start-Policy
-          <select className="w-full rounded bg-slate-700 px-3 py-2" value={startPolicy} onChange={(event) => setStartPolicy(event.target.value as StartPolicyValue)}>
-            {startPolicyOptions.map((policy) => <option key={policy.value} value={policy.value}>{policy.label}</option>)}
-          </select>
+        <label className="text-sm text-slate-300 md:col-span-2">
+          <span className="mb-2 flex items-center gap-2">
+            <input type="checkbox" checked={manualStartEnabled} onChange={(event) => setManualStartEnabled(event.target.checked)} />
+            Manuelle Startzeit setzen (optional)
+          </span>
+          {manualStartEnabled ? <input type="datetime-local" className="w-full rounded bg-slate-700 px-3 py-2" value={manualStartTime} onChange={(event) => setManualStartTime(event.target.value)} /> : <p className="text-xs text-slate-400">Ohne manuelle Startzeit wird automatisch ans Linienende angehängt.</p>}
         </label>
         <label className="text-sm text-slate-300">Startposition
           <input className="w-full rounded bg-slate-700 px-3 py-2" value={startPosition} onChange={(event) => setStartPosition(event.target.value)} />
@@ -281,7 +275,7 @@ const OrderCard = memo(function OrderCard({
   onDragStart: () => void
   onDragEnd: () => void
   onDrop: (event: DragEvent<HTMLDivElement>) => void
-  onEdit: (updates: Partial<Pick<StoreOrder, 'quantity' | 'packageSize' | 'productId' | 'startPolicy'>>) => void
+  onEdit: (updates: Partial<Pick<StoreOrder, 'quantity' | 'packageSize' | 'productId'>>) => void
   onAssign: (rwId: string) => void
   onStatusChange: (status: StatusValue) => void
   onIstActual: (actualQuantity: number) => void
@@ -290,7 +284,8 @@ const OrderCard = memo(function OrderCard({
   const [selectedRw, setSelectedRw] = useState(assignedRwId ?? stirrers[0]?.rwId ?? '')
   const [actualInput, setActualInput] = useState(order.actualQuantity ? String(order.actualQuantity) : '')
   const [remainingInput, setRemainingInput] = useState('')
-  const lockDrag = (order.status === 'made' || order.status === 'running') && (!order.fillEnd || Date.parse(order.fillEnd) > Date.now())
+  const [renderTs] = useState(() => Date.now())
+  const lockDrag = (order.status === 'made' || order.status === 'running') && (!order.fillEnd || Date.parse(order.fillEnd) > renderTs)
 
   return (
     <div onDragOver={(event) => event.preventDefault()} onDrop={onDrop} className="rounded border border-slate-700 bg-slate-950/80 p-3 text-sm">
@@ -302,6 +297,7 @@ const OrderCard = memo(function OrderCard({
         <span className="rounded bg-slate-800 px-2 py-1 text-xs text-cyan-300">{order.status}</span>
       </div>
       <p className="text-xs text-slate-400">Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}</p>
+      {order.manualStartWarning ? <p className="mt-1 inline-flex rounded bg-amber-500/20 px-2 py-1 text-[11px] text-amber-200">⚠ Manuelle Startzeit lag vor möglichem Start</p> : null}
       <p className="text-xs text-amber-300">RW: {assignedRwId ?? 'nicht zugewiesen'}</p>
       <div className="mt-2 grid grid-cols-2 gap-2">
         <label className="text-xs text-slate-300">Status<select value={order.status} onChange={(event) => onStatusChange(event.target.value as StatusValue)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
@@ -309,7 +305,6 @@ const OrderCard = memo(function OrderCard({
         <label className="text-xs text-slate-300">Menge<input type="number" min={1} value={order.quantity} onChange={(event) => { const next = Number(event.target.value); if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next }) }} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
         <label className="text-xs text-slate-300">Gebinde<select value={order.packageSize} onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         <label className="col-span-2 text-xs text-slate-300">Produkt<select value={order.productId} onChange={(event) => onEdit({ productId: event.target.value })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{products.map((product) => <option key={product.productId} value={product.productId}>{product.name} ({product.articleNo})</option>)}</select></label>
-        <label className="col-span-2 text-xs text-slate-300">Start-Policy<select value={order.startPolicy} onChange={(event) => onEdit({ startPolicy: event.target.value as StartPolicyValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{startPolicyOptions.map((policy) => <option key={policy.value} value={policy.value}>{policy.label}</option>)}</select></label>
         <label className="text-xs text-slate-300">already filled<input type="number" min={0} value={actualInput} onChange={(event) => setActualInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
         <button type="button" onClick={() => { const next = Number(actualInput); if (!Number.isNaN(next)) onIstActual(next) }} className="rounded bg-cyan-600 px-2 py-1 text-xs font-semibold">IST übernehmen</button>
         <label className="text-xs text-slate-300">Restmenge<input type="number" min={0} value={remainingInput} onChange={(event) => setRemainingInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>

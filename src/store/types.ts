@@ -6,6 +6,7 @@ export type HistoryEventType =
   | 'UNASSIGN'
   | 'IST'
   | 'MASTERDATA'
+  | 'SETTINGS'
   | 'IMPORT'
   | 'EXPORT'
 
@@ -60,6 +61,7 @@ export interface Order {
   startPosition: string
   fillStart?: string
   fillEnd?: string
+  manualStartWarning?: boolean
   sequence: number
   status: 'planned' | 'made' | 'running' | 'done'
   actualQuantity: number
@@ -84,12 +86,17 @@ export interface MetaSettingsState {
   lastError: string | null
 }
 
+export interface SchedulingSettingsState {
+  shiftStartTime: string
+}
+
 export interface AppState {
   masterdata: MasterdataState
   orders: Order[]
   assignments: Assignment[]
   history: HistoryEvent[]
   meta: MetaSettingsState
+  settings: SchedulingSettingsState
 }
 
 export interface ActionResult {
