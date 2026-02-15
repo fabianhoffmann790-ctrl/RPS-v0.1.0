@@ -15,6 +15,13 @@ const createId = () =>
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`
 
+const packageRateKey = {
+  '250ml': 'l250MlPerMin',
+  '500ml': 'l500MlPerMin',
+  '1l': 'l1000MlPerMin',
+  '5l': 'l5000MlPerMin',
+} as const
+
 const initialState: AppState = {
   masterdata: {
     products: [
@@ -74,19 +81,46 @@ const sanitizeMasterdata = (input?: Partial<MasterdataState> & { machines?: stri
   }
 }
 
-const mergeState = (parsed: Partial<AppState> & { masterdata?: Partial<MasterdataState> & { machines?: string[] } }): AppState => ({
-  ...initialState,
-  ...parsed,
-  masterdata: sanitizeMasterdata(parsed.masterdata),
-  orders: parsed.orders ?? [],
-  assignments: parsed.assignments ?? [],
-  history: parsed.history ?? [],
-  meta: {
-    ...initialState.meta,
-    ...parsed.meta,
-    usedOrderNumbers: Array.from(new Set(parsed.meta?.usedOrderNumbers ?? [])),
-  },
-})
+const sanitizeOrders = (orders: Order[], masterdata: MasterdataState): Order[] => {
+  const defaultProduct = masterdata.products[0]
+  const defaultLine = masterdata.lines[0]
+
+  return orders.map((order) => {
+    const packageSize = order.packageSize ?? '1l'
+    const line = masterdata.lines.find((item) => item.lineId === order.lineId) ?? defaultLine
+
+    return {
+      ...order,
+      productId: order.productId ?? defaultProduct?.productId ?? '',
+      articleNo: order.articleNo ?? defaultProduct?.articleNo ?? '',
+      quantity: order.quantity ?? order.actualQuantity ?? 0,
+      packageSize,
+      lineId: order.lineId ?? line?.lineId ?? '',
+      lineName: order.lineName ?? line?.name ?? '',
+      lineRate: order.lineRate ?? (line ? line.rates[packageRateKey[packageSize]] : 0),
+      startTime: order.startTime ?? '',
+      startPosition: order.startPosition ?? '',
+    }
+  })
+}
+
+const mergeState = (parsed: Partial<AppState> & { masterdata?: Partial<MasterdataState> & { machines?: string[] } }): AppState => {
+  const masterdata = sanitizeMasterdata(parsed.masterdata)
+
+  return {
+    ...initialState,
+    ...parsed,
+    masterdata,
+    orders: sanitizeOrders(parsed.orders ?? [], masterdata),
+    assignments: parsed.assignments ?? [],
+    history: parsed.history ?? [],
+    meta: {
+      ...initialState.meta,
+      ...parsed.meta,
+      usedOrderNumbers: Array.from(new Set(parsed.meta?.usedOrderNumbers ?? [])),
+    },
+  }
+}
 
 const loadState = (): AppState => {
   try {
@@ -105,7 +139,21 @@ const saveState = (state: AppState) => {
 interface StoreContextValue {
   state: AppState
   clearError: () => void
-  createOrder: (input: Pick<Order, 'orderNo' | 'title'>) => ActionResult
+  createOrder: (
+    input: Pick<
+      Order,
+      | 'orderNo'
+      | 'title'
+      | 'productId'
+      | 'articleNo'
+      | 'quantity'
+      | 'packageSize'
+      | 'lineId'
+      | 'lineName'
+      | 'startTime'
+      | 'startPosition'
+    >,
+  ) => ActionResult
   editOrder: (orderId: string, updates: Partial<Pick<Order, 'title' | 'status'>>) => ActionResult
   moveOrder: (orderId: string, status: Order['status']) => ActionResult
   assignOrder: (orderId: string, machine: string) => ActionResult
@@ -194,24 +242,62 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   }
 
   const createOrder: StoreContextValue['createOrder'] = (input) => {
-    const orderNo = input.orderNo.trim()
+    const rawOrderNo = input.orderNo.trim()
     const title = input.title.trim()
+    const startPosition = input.startPosition.trim()
+    const line = state.masterdata.lines.find((item) => item.lineId === input.lineId)
+    const rate = line ? line.rates[packageRateKey[input.packageSize]] : 0
 
-    if (!orderNo) return fail('Auftragsnummer ist erforderlich.')
-    if (!title) return fail('Titel ist erforderlich.')
+    if (!title) return fail('Produktname ist erforderlich.')
+    if (input.quantity <= 0) return fail('Menge muss größer als 0 sein.')
+    if (!line) return fail('Linie ist ungültig.')
+    if (rate <= 0) return fail('Die Linienrate für das gewählte Gebinde muss größer als 0 sein.')
+    if (!input.startTime) return fail('Startzeit ist erforderlich.')
+    if (!startPosition) return fail('Startposition ist erforderlich.')
+
+    let orderNo = rawOrderNo
+    if (!orderNo) {
+      let autoCounter = state.orders.length + 1
+      orderNo = `AUTO-${autoCounter.toString().padStart(4, '0')}`
+      while (state.meta.usedOrderNumbers.includes(orderNo)) {
+        autoCounter += 1
+        orderNo = `AUTO-${autoCounter.toString().padStart(4, '0')}`
+      }
+    }
+
     if (state.meta.usedOrderNumbers.includes(orderNo)) {
       return fail(`Auftragsnummer ${orderNo} ist bereits verwendet und gesperrt.`)
     }
 
+    const newOrderId = createId()
     commit((prev) => ({
       ...prev,
-      orders: [...prev.orders, { id: createId(), orderNo, title, status: 'new', actualQuantity: 0 }],
+      orders: [
+        ...prev.orders,
+        {
+          id: newOrderId,
+          orderNo,
+          title,
+          productId: input.productId,
+          articleNo: input.articleNo,
+          quantity: input.quantity,
+          packageSize: input.packageSize,
+          lineId: line.lineId,
+          lineName: line.name,
+          lineRate: rate,
+          startTime: input.startTime,
+          startPosition,
+          status: 'new',
+          actualQuantity: 0,
+        },
+      ],
+      assignments: [...prev.assignments.filter((item) => item.orderId !== newOrderId), { orderId: newOrderId, machine: line.name }],
       meta: {
         ...prev.meta,
         usedOrderNumbers: [...prev.meta.usedOrderNumbers, orderNo],
         lastError: null,
       },
-      history: [...prev.history, historyMessage('CREATE', `Auftrag ${orderNo} erstellt.`)],
+      history: [...prev.history, historyMessage('CREATE', `Auftrag ${orderNo} erstellt (${line.name}, ${input.quantity} ${input.packageSize}).`)],
     }))
 
     return { ok: true }
