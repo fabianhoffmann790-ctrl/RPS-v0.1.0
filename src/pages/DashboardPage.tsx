@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react'
 import type { DragEvent, FormEvent } from 'react'
 import { useAppStore } from '../store/appStore'
+import { getOrderRwWindow } from '../store/scheduling'
 
 const packageOptions = [
   { value: '250ml', label: '250 ml' },
@@ -16,11 +17,13 @@ const startPolicyOptions = [
 
 type PackageValue = (typeof packageOptions)[number]['value']
 type StartPolicyValue = (typeof startPolicyOptions)[number]['value']
+type StoreState = ReturnType<typeof useAppStore>['state']
+type StoreOrder = StoreState['orders'][number]
 
 interface LineBoardColumn {
   lineId: string
   lineName: string
-  orders: ReturnType<typeof useAppStore>['state']['orders']
+  orders: StoreState['orders']
 }
 
 const EmptyColumn = memo(function EmptyColumn() {
@@ -28,7 +31,7 @@ const EmptyColumn = memo(function EmptyColumn() {
 })
 
 function DashboardPage() {
-  const { state, createOrder, editOrder, reorderLineOrders } = useAppStore()
+  const { state, createOrder, editOrder, reorderLineOrders, assignOrder } = useAppStore()
   const [search, setSearch] = useState('')
   const [orderNo, setOrderNo] = useState('')
   const [quantity, setQuantity] = useState('')
@@ -56,8 +59,7 @@ function DashboardPage() {
   const searchMatches = useMemo(() => {
     const value = search.trim().toLowerCase()
     return state.masterdata.products.filter(
-      (product) =>
-        product.name.toLowerCase().includes(value) || product.articleNo.toLowerCase().includes(value),
+      (product) => product.name.toLowerCase().includes(value) || product.articleNo.toLowerCase().includes(value),
     )
   }, [search, state.masterdata.products])
 
@@ -79,6 +81,29 @@ function DashboardPage() {
         .sort((a, b) => (a.sequence === b.sequence ? a.id.localeCompare(b.id) : a.sequence - b.sequence)),
     }))
   }, [state.masterdata.lines, state.orders])
+
+  const assignmentByOrderId = useMemo(() => {
+    const map = new Map<string, string>()
+    state.assignments.forEach((assignment) => map.set(assignment.orderId, assignment.machine))
+    return map
+  }, [state.assignments])
+
+  const rwColumns = useMemo(() => {
+    return state.masterdata.stirrers.map((rw) => ({
+      rw,
+      entries: state.assignments
+        .filter((assignment) => assignment.machine === rw.rwId)
+        .map((assignment) => {
+          const order = state.orders.find((item) => item.id === assignment.orderId)
+          if (!order) return null
+          const window = getOrderRwWindow(order, state.masterdata)
+          if (!window) return null
+          return { order, window }
+        })
+        .filter((entry): entry is { order: StoreOrder; window: NonNullable<ReturnType<typeof getOrderRwWindow>> } => Boolean(entry))
+        .sort((a, b) => a.window.makeStart.localeCompare(b.window.makeStart)),
+    }))
+  }, [state.assignments, state.masterdata, state.orders])
 
   const onCreateOrder = (event: FormEvent) => {
     event.preventDefault()
@@ -125,157 +150,110 @@ function DashboardPage() {
     setDragOrderId(null)
   }
 
+  const onDropRw = (event: DragEvent<HTMLElement>, rwId: string) => {
+    event.preventDefault()
+    if (!dragOrderId) return
+    assignOrder(dragOrderId, rwId)
+    setDragOrderId(null)
+  }
+
   return (
     <section className="space-y-6">
       <div className="rounded-xl border border-cyan-600/40 bg-slate-800 p-5">
         <h1 className="text-2xl font-bold text-cyan-300">Auftrag anlegen</h1>
-        <p className="mt-2 text-slate-300">Betriebstaugliche Erfassung inkl. Produktsuche, Mengen und Linienzuordnung.</p>
       </div>
 
       <form onSubmit={onCreateOrder} className="grid gap-4 rounded-xl border border-slate-700 bg-slate-800 p-5 md:grid-cols-2">
         <div className="space-y-1 md:col-span-2">
           <label className="text-sm text-slate-300">Produktsuche (Name oder Artikelnummer)</label>
-          <input
-            list="product-options"
-            className="w-full rounded bg-slate-700 px-3 py-2"
-            placeholder="z. B. Standardprodukt oder ART-001"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
+          <input list="product-options" className="w-full rounded bg-slate-700 px-3 py-2" value={search} onChange={(event) => setSearch(event.target.value)} />
           <datalist id="product-options">
             {state.masterdata.products.map((product) => (
               <option key={product.productId} value={`${product.name} (${product.articleNo})`} />
             ))}
           </datalist>
-          <p className="text-xs text-slate-400">
-            {selectedProduct
-              ? `Ausgewählt: ${selectedProduct.name} · ${selectedProduct.articleNo}`
-              : search
-                ? 'Kein exakter Treffer ausgewählt. Bitte Vorschlag übernehmen.'
-                : 'Tippen für Autocomplete.'}
-          </p>
-          {search && !selectedProduct && searchMatches.length > 0 ? (
-            <p className="text-xs text-slate-400">
-              Treffer: {searchMatches.slice(0, 4).map((product) => `${product.name} (${product.articleNo})`).join(', ')}
-            </p>
-          ) : null}
+          <p className="text-xs text-slate-400">{selectedProduct ? `Ausgewählt: ${selectedProduct.name}` : search ? 'Kein exakter Treffer ausgewählt.' : 'Tippen für Autocomplete.'}</p>
+          {search && !selectedProduct && searchMatches.length > 0 ? <p className="text-xs text-slate-500">Treffer: {searchMatches.map((m) => m.name).join(', ')}</p> : null}
         </div>
 
-        <div className="space-y-1">
-          <label className="text-sm text-slate-300">Menge</label>
-          <input
-            type="number"
-            min={1}
-            className="w-full rounded bg-slate-700 px-3 py-2"
-            placeholder="Liter"
-            value={quantity}
-            onChange={(event) => setQuantity(event.target.value)}
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-300">Gebindegröße</label>
-          <select
-            className="w-full rounded bg-slate-700 px-3 py-2"
-            value={packageSize}
-            onChange={(event) => setPackageSize(event.target.value as PackageValue)}
-          >
-            {packageOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
+        <label className="text-sm text-slate-300">Menge
+          <input type="number" min={1} className="w-full rounded bg-slate-700 px-3 py-2" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+        </label>
+        <label className="text-sm text-slate-300">Gebindegröße
+          <select className="w-full rounded bg-slate-700 px-3 py-2" value={packageSize} onChange={(event) => setPackageSize(event.target.value as PackageValue)}>
+            {packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-300">Linie</label>
+        </label>
+        <label className="text-sm text-slate-300">Linie
           <select className="w-full rounded bg-slate-700 px-3 py-2" value={lineId} onChange={(event) => setLineId(event.target.value)}>
-            {state.masterdata.lines.map((line) => (
-              <option key={line.lineId} value={line.lineId}>
-                {line.name}
-              </option>
-            ))}
+            {state.masterdata.lines.map((line) => <option key={line.lineId} value={line.lineId}>{line.name}</option>)}
           </select>
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-300">Optionale Auftragsnummer</label>
-          <input
-            className="w-full rounded bg-slate-700 px-3 py-2"
-            placeholder="leer = AUTO-Nummer"
-            value={orderNo}
-            onChange={(event) => setOrderNo(event.target.value)}
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-300">Startzeit (für Fix-Policy)</label>
-          <input
-            type="datetime-local"
-            className="w-full rounded bg-slate-700 px-3 py-2"
-            value={startTime}
-            onChange={(event) => setStartTime(event.target.value)}
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="text-sm text-slate-300">Start-Policy</label>
-          <select
-            className="w-full rounded bg-slate-700 px-3 py-2"
-            value={startPolicy}
-            onChange={(event) => setStartPolicy(event.target.value as StartPolicyValue)}
-          >
-            {startPolicyOptions.map((policy) => (
-              <option key={policy.value} value={policy.value}>
-                {policy.label}
-              </option>
-            ))}
+        </label>
+        <label className="text-sm text-slate-300">Optionale Auftragsnummer
+          <input className="w-full rounded bg-slate-700 px-3 py-2" value={orderNo} onChange={(event) => setOrderNo(event.target.value)} />
+        </label>
+        <label className="text-sm text-slate-300">Startzeit (für Fix-Policy)
+          <input type="datetime-local" className="w-full rounded bg-slate-700 px-3 py-2" value={startTime} onChange={(event) => setStartTime(event.target.value)} />
+        </label>
+        <label className="text-sm text-slate-300">Start-Policy
+          <select className="w-full rounded bg-slate-700 px-3 py-2" value={startPolicy} onChange={(event) => setStartPolicy(event.target.value as StartPolicyValue)}>
+            {startPolicyOptions.map((policy) => <option key={policy.value} value={policy.value}>{policy.label}</option>)}
           </select>
-        </div>
+        </label>
+        <label className="text-sm text-slate-300">Startposition
+          <input className="w-full rounded bg-slate-700 px-3 py-2" value={startPosition} onChange={(event) => setStartPosition(event.target.value)} />
+        </label>
 
-        <div className="space-y-1">
-          <label className="text-sm text-slate-300">Startposition</label>
-          <input
-            className="w-full rounded bg-slate-700 px-3 py-2"
-            placeholder="z. B. Slot 1"
-            value={startPosition}
-            onChange={(event) => setStartPosition(event.target.value)}
-          />
-        </div>
-
-        <button type="submit" className="rounded bg-cyan-500 px-3 py-2 font-semibold text-slate-900 md:col-span-2">
-          Auftrag speichern
-        </button>
+        <button type="submit" className="rounded bg-cyan-500 px-3 py-2 font-semibold text-slate-900 md:col-span-2">Auftrag speichern</button>
       </form>
 
       <div className="rounded-xl border border-slate-700 bg-slate-800 p-5">
         <h2 className="mb-3 text-xl font-semibold">Linienboard (4 Spalten)</h2>
-        <div className="grid gap-4 xl:grid-cols-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {boardColumns.map((lineColumn) => (
-            <article
-              key={lineColumn.lineId}
-              className="rounded border border-slate-700 bg-slate-900/70 p-3"
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => onDropCard(event, lineColumn)}
-            >
+            <article key={lineColumn.lineId} className="rounded border border-slate-700 bg-slate-900/70 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropCard(event, lineColumn)}>
               <h3 className="font-semibold text-cyan-300">{lineColumn.lineName}</h3>
               <div className="mt-3 max-h-[28rem] space-y-2 overflow-y-auto pr-1">
-                {lineColumn.orders.length === 0 ? (
-                  <EmptyColumn />
-                ) : (
-                  lineColumn.orders.map((order) => (
-                    <OrderCard
-                      key={order.id}
-                      order={order}
-                      products={state.masterdata.products}
-                      onDragStart={() => setDragOrderId(order.id)}
-                      onDragEnd={() => setDragOrderId(null)}
-                      onDrop={(event) => onDropCard(event, lineColumn, order.id)}
-                      onEdit={(updates) => editOrder(order.id, updates)}
-                    />
-                  ))
-                )}
+                {lineColumn.orders.length === 0 ? <EmptyColumn /> : lineColumn.orders.map((order) => (
+                  <OrderCard key={order.id} order={order} products={state.masterdata.products} stirrers={state.masterdata.stirrers} assignedRwId={assignmentByOrderId.get(order.id)} onDragStart={() => setDragOrderId(order.id)} onDragEnd={() => setDragOrderId(null)} onDrop={(event) => onDropCard(event, lineColumn, order.id)} onEdit={(updates) => editOrder(order.id, updates)} onAssign={(rwId) => assignOrder(order.id, rwId)} />
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-700 bg-slate-800 p-5">
+        <h2 className="mb-3 text-xl font-semibold">RW-Board (Kacheln + Zeitdarstellung)</h2>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {rwColumns.map(({ rw, entries }) => (
+            <article key={rw.rwId} className="rounded border border-slate-700 bg-slate-900/70 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
+              <h3 className="font-semibold text-amber-300">{rw.name} ({rw.rwId})</h3>
+              <p className="mt-1 text-xs text-slate-400">Drop Auftrag hier für Assignment.</p>
+              <div className="mt-3 space-y-2">
+                {entries.length === 0 ? <p className="text-sm text-slate-500">Keine Belegung.</p> : entries.map(({ order, window }) => {
+                  const make = Math.max(window.makeDurationMin, 0)
+                  const holdFill = Math.max((Date.parse(window.fillEnd) - Date.parse(window.makeEnd)) / 60_000, 1)
+                  const total = Math.max(make + holdFill, 1)
+                  return (
+                    <div key={order.id} className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
+                      <p className="font-semibold text-slate-100">{order.orderNo}</p>
+                      <p className="text-slate-400">Sperrbereich: {window.makeStart} → {window.fillEnd}</p>
+                      <div className="mt-2 flex h-3 overflow-hidden rounded">
+                        <div className="bg-cyan-500" style={{ width: `${(make / total) * 100}%` }} title="Herstellung" />
+                        <div className="bg-violet-500" style={{ width: `${(holdFill / total) * 100}%` }} title="Halten + Abfüllen" />
+                      </div>
+                      <div className="mt-1 flex justify-between text-[11px] text-slate-400">
+                        <span>MakeStart {window.makeStart}</span>
+                        <span>MakeEnd {window.makeEnd}</span>
+                      </div>
+                      <div className="flex justify-between text-[11px] text-slate-400">
+                        <span>FillStart {window.fillStart}</span>
+                        <span>FillEnd {window.fillEnd}</span>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </article>
           ))}
@@ -288,96 +266,41 @@ function DashboardPage() {
 const OrderCard = memo(function OrderCard({
   order,
   products,
+  stirrers,
+  assignedRwId,
   onDragStart,
   onDragEnd,
   onDrop,
   onEdit,
+  onAssign,
 }: {
-  order: ReturnType<typeof useAppStore>['state']['orders'][number]
-  products: ReturnType<typeof useAppStore>['state']['masterdata']['products']
+  order: StoreOrder
+  products: StoreState['masterdata']['products']
+  stirrers: StoreState['masterdata']['stirrers']
+  assignedRwId?: string
   onDragStart: () => void
   onDragEnd: () => void
   onDrop: (event: DragEvent<HTMLDivElement>) => void
-  onEdit: (
-    updates: Partial<
-      Pick<ReturnType<typeof useAppStore>['state']['orders'][number], 'quantity' | 'packageSize' | 'productId' | 'startPolicy'>
-    >,
-  ) => void
+  onEdit: (updates: Partial<Pick<StoreOrder, 'quantity' | 'packageSize' | 'productId' | 'startPolicy'>>) => void
+  onAssign: (rwId: string) => void
 }) {
+  const [selectedRw, setSelectedRw] = useState(assignedRwId ?? stirrers[0]?.rwId ?? '')
+
   return (
-    <div
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={onDrop}
-      className="rounded border border-slate-700 bg-slate-950/80 p-3 text-sm"
-    >
-      <div
-        draggable
-        onDragStart={onDragStart}
-        onDragEnd={onDragEnd}
-        className="mb-2 cursor-grab rounded bg-slate-800 px-2 py-1 text-xs text-slate-300"
-      >
-        ↕ Reihenfolge ändern
-      </div>
-      <p className="font-semibold text-slate-100">
-        {order.orderNo} · {order.title}
-      </p>
+    <div onDragOver={(event) => event.preventDefault()} onDrop={onDrop} className="rounded border border-slate-700 bg-slate-950/80 p-3 text-sm">
+      <div draggable onDragStart={onDragStart} onDragEnd={onDragEnd} className="mb-2 cursor-grab rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">↕ Reihenfolge ändern / auf RW ziehen</div>
+      <p className="font-semibold text-slate-100">{order.orderNo} · {order.title}</p>
       <p className="text-xs text-slate-400">Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}</p>
+      <p className="text-xs text-amber-300">RW: {assignedRwId ?? 'nicht zugewiesen'}</p>
       <div className="mt-2 grid grid-cols-2 gap-2">
-        <label className="text-xs text-slate-300">
-          Menge
-          <input
-            type="number"
-            min={1}
-            value={order.quantity}
-            onChange={(event) => {
-              const next = Number(event.target.value)
-              if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next })
-            }}
-            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
-          />
-        </label>
-        <label className="text-xs text-slate-300">
-          Gebinde
-          <select
-            value={order.packageSize}
-            onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })}
-            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
-          >
-            {packageOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-xs text-slate-300 col-span-2">
-          Produkt
-          <select
-            value={order.productId}
-            onChange={(event) => onEdit({ productId: event.target.value })}
-            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
-          >
-            {products.map((product) => (
-              <option key={product.productId} value={product.productId}>
-                {product.name} ({product.articleNo})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-xs text-slate-300 col-span-2">
-          Start-Policy
-          <select
-            value={order.startPolicy}
-            onChange={(event) => onEdit({ startPolicy: event.target.value as StartPolicyValue })}
-            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
-          >
-            {startPolicyOptions.map((policy) => (
-              <option key={policy.value} value={policy.value}>
-                {policy.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <label className="text-xs text-slate-300">Menge<input type="number" min={1} value={order.quantity} onChange={(event) => { const next = Number(event.target.value); if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next }) }} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
+        <label className="text-xs text-slate-300">Gebinde<select value={order.packageSize} onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label className="col-span-2 text-xs text-slate-300">Produkt<select value={order.productId} onChange={(event) => onEdit({ productId: event.target.value })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{products.map((product) => <option key={product.productId} value={product.productId}>{product.name} ({product.articleNo})</option>)}</select></label>
+        <label className="col-span-2 text-xs text-slate-300">Start-Policy<select value={order.startPolicy} onChange={(event) => onEdit({ startPolicy: event.target.value as StartPolicyValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{startPolicyOptions.map((policy) => <option key={policy.value} value={policy.value}>{policy.label}</option>)}</select></label>
+        <div className="col-span-2 grid grid-cols-3 gap-2 items-end">
+          <label className="col-span-2 text-xs text-slate-300">RW zuweisen<select value={selectedRw} onChange={(event) => setSelectedRw(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{stirrers.map((rw) => <option key={rw.rwId} value={rw.rwId}>{rw.name} ({rw.rwId})</option>)}</select></label>
+          <button type="button" className="rounded bg-amber-400 px-2 py-1 text-xs font-semibold text-slate-900" onClick={() => onAssign(selectedRw)}>Assign</button>
+        </div>
       </div>
     </div>
   )

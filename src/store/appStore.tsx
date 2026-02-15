@@ -7,6 +7,7 @@ import type {
   MasterdataState,
   Order,
 } from './types'
+import { getOrderRwWindow, hasOverlap } from './scheduling'
 
 const STORAGE_KEY = 'rps-store-v2'
 
@@ -347,7 +348,6 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           actualQuantity: 0,
         },
       ],
-      assignments: [...prev.assignments.filter((item) => item.orderId !== newOrderId), { orderId: newOrderId, machine: line.name }],
       meta: {
         ...prev.meta,
         usedOrderNumbers: [...prev.meta.usedOrderNumbers, orderNo],
@@ -449,13 +449,33 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const assignOrder: StoreContextValue['assignOrder'] = (orderId, machine) => {
     const order = state.orders.find((item) => item.id === orderId)
     if (!order) return fail('Auftrag nicht gefunden.')
-    if (!state.masterdata.lines.some((line) => line.name === machine)) return fail('Linie unbekannt.')
+    const rw = state.masterdata.stirrers.find((item) => item.rwId === machine)
+    if (!rw) return fail('Rührwerk unbekannt.')
+
+    const nextWindow = getOrderRwWindow(order, state.masterdata)
+    if (!nextWindow) return fail('Zuweisung blockiert: Für den Auftrag fehlen Fill-Zeiten.')
+
+    const conflicts = state.assignments
+      .filter((item) => item.machine === machine && item.orderId !== orderId)
+      .map((item) => ({ assignment: item, order: state.orders.find((orderItem) => orderItem.id === item.orderId) }))
+      .filter((item): item is { assignment: { orderId: string; machine: string }; order: Order } => Boolean(item.order))
+
+    for (const conflict of conflicts) {
+      const conflictWindow = getOrderRwWindow(conflict.order, state.masterdata)
+      if (!conflictWindow) continue
+
+      if (hasOverlap(nextWindow, conflictWindow)) {
+        return fail(
+          `${rw.rwId} belegt von ${conflictWindow.makeStart} bis ${conflictWindow.fillEnd} durch Auftrag ${conflict.order.orderNo}.`,
+        )
+      }
+    }
 
     commit((prev) => ({
       ...prev,
       assignments: [...prev.assignments.filter((item) => item.orderId !== orderId), { orderId, machine }],
       meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('ASSIGN', `Auftrag ${order.orderNo} zu ${machine} zugewiesen.`)],
+      history: [...prev.history, historyMessage('ASSIGN', `Auftrag ${order.orderNo} zu ${rw.name} (${rw.rwId}) zugewiesen.`)],
     }))
     return { ok: true }
   }
