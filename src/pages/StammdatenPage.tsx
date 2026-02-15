@@ -8,6 +8,7 @@ const createProduct = (): Product => ({
   name: '',
   articleNo: '',
   makeTimeMinPerL: 0,
+  makeTimePerBatchMin: 30,
 })
 
 const createLine = (): Line => ({
@@ -21,7 +22,7 @@ const createLine = (): Line => ({
   },
 })
 
-const createStirrer = (): Stirrer => ({ rwId: '', name: '' })
+const createStirrer = (): Stirrer => ({ rwId: '', name: '', rwCleanMin: undefined })
 
 function HelpHint({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
@@ -50,6 +51,7 @@ function StammdatenPage() {
   const { state, updateMasterdata, updateSettings } = useAppStore()
   const [draft, setDraft] = useState<MasterdataState>(state.masterdata)
   const [shiftStartTime, setShiftStartTime] = useState(state.settings.shiftStartTime)
+  const [rwCleanMin, setRwCleanMin] = useState(state.settings.rwCleanMin)
 
   const validationMessage = useMemo(() => {
     if (!draft.products.length || !draft.lines.length || !draft.stirrers.length) {
@@ -87,7 +89,7 @@ function StammdatenPage() {
   const onSave = () => {
     const masterdataResult = updateMasterdata(draft)
     if (!masterdataResult.ok) return
-    updateSettings({ shiftStartTime })
+    updateSettings({ shiftStartTime, rwCleanMin })
   }
 
   return (
@@ -99,9 +101,14 @@ function StammdatenPage() {
 
       <div className="rounded-xl border border-slate-700 bg-slate-800 p-5">
         <h2 className="mb-3 text-xl font-semibold">Planungs-Settings</h2>
-        <LabeledField label="Schichtstart (HH:mm)" help="Startanker für den Reflow pro Linie. Der erste Auftrag startet immer zu dieser Uhrzeit.">
-          <input type="time" value={shiftStartTime} onChange={(event) => setShiftStartTime(event.target.value)} className="w-full rounded bg-slate-700 px-3 py-2 md:w-72" />
-        </LabeledField>
+        <div className="grid gap-3 md:grid-cols-2">
+          <LabeledField label="Schichtstart (HH:mm)" help="Startanker für den Reflow pro Linie. Der erste Auftrag startet immer zu dieser Uhrzeit.">
+            <input type="time" value={shiftStartTime} onChange={(event) => setShiftStartTime(event.target.value)} className="w-full rounded bg-slate-700 px-3 py-2 md:w-72" />
+          </LabeledField>
+          <LabeledField label="RW-Reinigung (min, global)" help="Default-Reinigungszeit nach FillEnd je Rührwerk.">
+            <input type="number" min="0" step="1" value={rwCleanMin} onChange={(event) => setRwCleanMin(Number(event.target.value))} className="w-full rounded bg-slate-700 px-3 py-2 md:w-72" />
+          </LabeledField>
+        </div>
       </div>
 
       <div className="space-y-4 rounded-xl border border-slate-700 bg-slate-800 p-5">
@@ -116,7 +123,8 @@ function StammdatenPage() {
             <LabeledField label="Produktname" help="Anzeigename im Auftrag."><input className="w-full rounded bg-slate-700 px-3 py-2" value={product.name} onChange={(event) => updateProduct(index, { name: event.target.value })} /></LabeledField>
             <LabeledField label="Artikelnummer" help="Eindeutige Referenz aus ERP."><input className="w-full rounded bg-slate-700 px-3 py-2" value={product.articleNo} onChange={(event) => updateProduct(index, { articleNo: event.target.value })} /></LabeledField>
             <LabeledField label="Viskosität (optional)" help="Nur Dokumentation, aktuell ohne Einfluss."><input className="w-full rounded bg-slate-700 px-3 py-2" type="number" min="0" step="0.1" value={product.viscosity ?? ''} onChange={(event) => updateProduct(index, { viscosity: parseOptionalNumber(event) })} /></LabeledField>
-            <LabeledField label="Rüstzeit (min/L)" help="Misch-/Herstellzeit je Liter Produkt."><input className="w-full rounded bg-slate-700 px-3 py-2" type="number" min="0" step="0.01" value={product.makeTimeMinPerL} onChange={(event) => updateProduct(index, { makeTimeMinPerL: Number(event.target.value) })} /></LabeledField>
+            <LabeledField label="Herstellzeit pro Ansatz (min)" help="Zeit für die Herstellphase MAKE vor FillStart."><input className="w-full rounded bg-slate-700 px-3 py-2" type="number" min="0" step="1" value={product.makeTimePerBatchMin ?? ''} onChange={(event) => updateProduct(index, { makeTimePerBatchMin: parseOptionalNumber(event) })} /></LabeledField>
+            <LabeledField label="Fallback Rüstzeit (min/L)" help="Legacy-Feld; wird genutzt, falls keine Herstellzeit pro Ansatz gesetzt ist."><input className="w-full rounded bg-slate-700 px-3 py-2" type="number" min="0" step="0.01" value={product.makeTimeMinPerL} onChange={(event) => updateProduct(index, { makeTimeMinPerL: Number(event.target.value) })} /></LabeledField>
             <LabeledField label="Abfüllfaktor (optional)" help="Korrekturfaktor für Ausbringung."><input className="w-full rounded bg-slate-700 px-3 py-2" type="number" min="0" step="0.01" value={product.fillFactor ?? ''} onChange={(event) => updateProduct(index, { fillFactor: parseOptionalNumber(event) })} /></LabeledField>
             <LabeledField label="Produktpuffer (min, optional)" help="Zusätzliche Pufferzeit für dieses Produkt."><input className="w-full rounded bg-slate-700 px-3 py-2" type="number" min="0" step="1" value={product.bufferMin ?? ''} onChange={(event) => updateProduct(index, { bufferMin: parseOptionalNumber(event) })} /></LabeledField>
             <button type="button" onClick={() => setDraft((prev) => ({ ...prev, products: prev.products.filter((_, idx) => idx !== index) }))} className="rounded bg-rose-600/80 px-3 py-2">Löschen</button>
@@ -151,6 +159,7 @@ function StammdatenPage() {
           <article key={`${stirrer.rwId || 'new'}-${index}`} className="grid gap-3 rounded border border-slate-700 p-3 md:grid-cols-3">
             <LabeledField label="Rührwerk-ID" help="Eindeutiger Schlüssel."><input className="w-full rounded bg-slate-700 px-3 py-2" value={stirrer.rwId} onChange={(event) => updateStirrer(index, { rwId: event.target.value })} /></LabeledField>
             <LabeledField label="Rührwerkname" help="Anzeigename."><input className="w-full rounded bg-slate-700 px-3 py-2" value={stirrer.name} onChange={(event) => updateStirrer(index, { name: event.target.value })} /></LabeledField>
+            <LabeledField label="RW-Reinigung (min, optional)" help="Überschreibt den globalen RW-Reinigungswert."><input className="w-full rounded bg-slate-700 px-3 py-2" type="number" min="0" step="1" value={stirrer.rwCleanMin ?? ''} onChange={(event) => updateStirrer(index, { rwCleanMin: parseOptionalNumber(event) })} /></LabeledField>
             <button type="button" onClick={() => setDraft((prev) => ({ ...prev, stirrers: prev.stirrers.filter((_, idx) => idx !== index) }))} className="rounded bg-rose-600/80 px-3 py-2">Löschen</button>
           </article>
         ))}

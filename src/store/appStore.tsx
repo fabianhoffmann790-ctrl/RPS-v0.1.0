@@ -38,6 +38,7 @@ const isValidShiftStartTime = (value: string) => /^([01]\d|2[0-3]):([0-5]\d)$/.t
 
 const sanitizeSettings = (input?: Partial<SchedulingSettingsState>): SchedulingSettingsState => ({
   shiftStartTime: isValidShiftStartTime(input?.shiftStartTime ?? '') ? input!.shiftStartTime! : '06:00',
+  rwCleanMin: Number.isFinite(input?.rwCleanMin) && (input?.rwCleanMin ?? 0) >= 0 ? (input?.rwCleanMin as number) : 30,
 })
 
 const getShiftAnchorMs = (shiftStartTime: string) => {
@@ -110,6 +111,7 @@ const initialState: AppState = {
   },
   settings: {
     shiftStartTime: '06:00',
+    rwCleanMin: 30,
   },
 }
 
@@ -288,7 +290,9 @@ const validateMasterdata = (masterdata: MasterdataState): string | null => {
     if (!product.productId || !product.name || !product.articleNo) {
       return 'Produkte benötigen productId, Name und articleNo.'
     }
-    if (product.makeTimeMinPerL <= 0) return `makeTimeMinPerL muss > 0 sein (${product.productId}).`
+    const hasBatch = product.makeTimePerBatchMin !== undefined && product.makeTimePerBatchMin > 0
+    const hasPerLiter = product.makeTimeMinPerL > 0
+    if (!hasBatch && !hasPerLiter) return `makeTimePerBatchMin oder makeTimeMinPerL muss > 0 sein (${product.productId}).`
     if (product.viscosity !== undefined && product.viscosity < 0) return `Viskosität darf nicht negativ sein (${product.productId}).`
     if (product.fillFactor !== undefined && product.fillFactor <= 0) return `fillFactor muss > 0 sein (${product.productId}).`
     if (product.bufferMin !== undefined && product.bufferMin < 0) return `bufferMin darf nicht negativ sein (${product.productId}).`
@@ -501,7 +505,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     const rw = state.masterdata.stirrers.find((item) => item.rwId === machine)
     if (!rw) return fail('Rührwerk unbekannt.')
 
-    const nextWindow = getOrderRwWindow(order, state.masterdata)
+    const nextWindow = getOrderRwWindow(order, state.masterdata, state.settings, machine)
     if (!nextWindow) return fail('Zuweisung blockiert: Für den Auftrag fehlen Fill-Zeiten.')
 
     const conflicts = state.assignments
@@ -510,12 +514,12 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       .filter((item): item is { assignment: { orderId: string; machine: string }; order: Order } => Boolean(item.order))
 
     for (const conflict of conflicts) {
-      const conflictWindow = getOrderRwWindow(conflict.order, state.masterdata)
+      const conflictWindow = getOrderRwWindow(conflict.order, state.masterdata, state.settings, machine)
       if (!conflictWindow) continue
 
       if (hasOverlap(nextWindow, conflictWindow)) {
         return fail(
-          `${rw.rwId} belegt von ${conflictWindow.makeStart} bis ${conflictWindow.fillEnd} durch Auftrag ${conflict.order.orderNo}.`,
+          `${rw.rwId} belegt von ${conflictWindow.makeStart} bis ${conflictWindow.cleanEnd} durch Auftrag ${conflict.order.orderNo}.`,
         )
       }
     }
@@ -618,7 +622,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     const sanitized = sanitizeSettings(settings)
 
     commit((prev) => {
-      if (prev.settings.shiftStartTime === sanitized.shiftStartTime) {
+      if (prev.settings.shiftStartTime === sanitized.shiftStartTime && prev.settings.rwCleanMin === sanitized.rwCleanMin) {
         return { ...prev, meta: { ...prev.meta, lastError: null } }
       }
 
@@ -633,7 +637,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         settings: sanitized,
         orders: reflownOrders,
         meta: { ...prev.meta, lastError: null },
-        history: [...prev.history, historyMessage('SETTINGS', `Planungs-Settings aktualisiert (shiftStartTime: ${sanitized.shiftStartTime}).`)],
+        history: [...prev.history, historyMessage('SETTINGS', `Planungs-Settings aktualisiert (shiftStartTime: ${sanitized.shiftStartTime}, rwCleanMin: ${sanitized.rwCleanMin}).`)],
       }
     })
 

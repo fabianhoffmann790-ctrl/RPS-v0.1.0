@@ -16,6 +16,7 @@ export interface Product {
   articleNo: string
   viscosity?: number
   makeTimeMinPerL: number
+  makeTimePerBatchMin?: number
   fillFactor?: number
   bufferMin?: number
 }
@@ -36,6 +37,7 @@ export interface Line {
 export interface Stirrer {
   rwId: string
   name: string
+  rwCleanMin?: number
 }
 
 export interface MasterdataState {
@@ -88,6 +90,7 @@ export interface MetaSettingsState {
 
 export interface SchedulingSettingsState {
   shiftStartTime: string
+  rwCleanMin: number
 }
 
 export interface AppState {

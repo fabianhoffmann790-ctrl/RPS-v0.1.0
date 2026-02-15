@@ -1,7 +1,7 @@
 import { memo, useMemo, useState } from 'react'
 import type { DragEvent, FormEvent } from 'react'
 import { useAppStore } from '../store/appStore'
-import { getOrderRwWindow } from '../store/scheduling'
+import { deriveRwSegments, getOrderRwWindow } from '../store/scheduling'
 
 const packageOptions = [
   { value: '250ml', label: '250 ml' },
@@ -33,17 +33,19 @@ interface TimelineBlock {
   label: string
   start: string
   end: string
-  tone: 'solid' | 'ghost'
-}
-
-interface RwTimelineEntry {
-  order: StoreOrder
-  window: NonNullable<ReturnType<typeof getOrderRwWindow>>
+  tone: 'lineFill' | 'make' | 'hold' | 'clean'
+  orderId?: string
 }
 
 type TimelineRange = { min: number; max: number } | null
 
 const parseMs = (value?: string) => (value ? Date.parse(value) : Number.NaN)
+
+const toDateTimeLocal = (valueMs: number) => {
+  const date = new Date(valueMs)
+  const pad = (input: number) => input.toString().padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
 
 const EmptyColumn = memo(function EmptyColumn() {
   return <p className="text-sm text-slate-400">Keine Aufträge auf dieser Linie.</p>
@@ -115,14 +117,14 @@ function DashboardPage() {
         .map((assignment) => {
           const order = state.orders.find((item) => item.id === assignment.orderId)
           if (!order) return null
-          const window = getOrderRwWindow(order, state.masterdata)
+          const window = getOrderRwWindow(order, state.masterdata, state.settings, rw.rwId)
           if (!window) return null
           return { order, window }
         })
-        .filter((entry): entry is RwTimelineEntry => Boolean(entry))
+        .filter((entry): entry is { order: StoreOrder; window: NonNullable<ReturnType<typeof getOrderRwWindow>> } => Boolean(entry))
         .sort((a, b) => a.window.makeStart.localeCompare(b.window.makeStart)),
     }))
-  }, [state.assignments, state.masterdata, state.orders])
+  }, [state.assignments, state.masterdata, state.orders, state.settings])
 
   const lineEvents = useMemo(() => {
     const byLineId = new Map<string, TimelineBlock[]>()
@@ -132,10 +134,11 @@ function DashboardPage() {
         .filter((order) => Boolean(order.fillStart && order.fillEnd))
         .map((order) => ({
           id: order.id,
+          orderId: order.id,
           label: order.orderNo,
           start: order.fillStart as string,
           end: order.fillEnd as string,
-          tone: 'solid' as const,
+          tone: 'lineFill' as const,
         }))
 
       byLineId.set(column.lineId, entries)
@@ -144,34 +147,70 @@ function DashboardPage() {
     return byLineId
   }, [boardColumns])
 
+  const rwDerived = useMemo(
+    () => deriveRwSegments({ orders: state.orders, assignments: state.assignments, masterdata: state.masterdata, settings: state.settings }),
+    [state.orders, state.assignments, state.masterdata, state.settings],
+  )
+
+  const lineMakeEvents = useMemo(() => {
+    const byLineId = new Map<string, TimelineBlock[]>()
+    const rwNameById = new Map(state.masterdata.stirrers.map((rw) => [rw.rwId, rw.name]))
+
+    state.orders.forEach((order) => {
+      const assignment = state.assignments.find((item) => item.orderId === order.id)
+      if (!assignment) return
+
+      const window = rwDerived.windowsByOrderId.get(order.id)
+      if (!window) return
+
+      const list = byLineId.get(order.lineId) ?? []
+      const rwName = rwNameById.get(assignment.machine) ?? assignment.machine
+      list.push({
+        id: `make-${order.id}`,
+        orderId: order.id,
+        label: rwName,
+        start: window.makeStart,
+        end: window.makeEnd,
+        tone: 'make',
+      })
+      byLineId.set(order.lineId, list)
+    })
+
+    return byLineId
+  }, [rwDerived.windowsByOrderId, state.assignments, state.masterdata.stirrers, state.orders])
+
   const rwEvents = useMemo(() => {
     const byRwId = new Map<string, TimelineBlock[]>()
 
-    rwColumns.forEach(({ rw, entries }) => {
-      byRwId.set(
-        rw.rwId,
-        entries.map(({ order, window }) => ({
-          id: order.id,
-          label: order.orderNo,
-          start: window.makeStart,
-          end: window.fillEnd,
-          tone: 'solid' as const,
-        })),
-      )
+    rwDerived.rwSegments.forEach((segment) => {
+      const list = byRwId.get(segment.rwId) ?? []
+      const order = state.orders.find((item) => item.id === segment.orderId)
+      const start = toDateTimeLocal(segment.startMs)
+      const end = toDateTimeLocal(segment.endMs)
+      list.push({
+        id: `${segment.orderId}-${segment.phase}-${segment.startMs}`,
+        orderId: segment.orderId,
+        label: order?.orderNo ?? segment.orderId,
+        start,
+        end,
+        tone: segment.phase === 'MAKE' ? 'make' : segment.phase === 'CLEAN' ? 'clean' : 'hold',
+      })
+      byRwId.set(segment.rwId, list)
     })
 
     return byRwId
-  }, [rwColumns])
+  }, [rwDerived.rwSegments, state.orders])
 
   const timelineRange = useMemo(() => {
     const values = [
       ...Array.from(lineEvents.values()).flatMap((events) => events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)])),
+      ...Array.from(lineMakeEvents.values()).flatMap((events) => events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)])),
       ...Array.from(rwEvents.values()).flatMap((events) => events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)])),
     ].filter(Number.isFinite)
 
     if (!values.length) return null
     return { min: Math.min(...values), max: Math.max(...values) }
-  }, [lineEvents, rwEvents])
+  }, [lineEvents, lineMakeEvents, rwEvents])
 
   const onCreateOrder = (event: FormEvent) => {
     event.preventDefault()
@@ -297,7 +336,12 @@ function DashboardPage() {
             <div className="mt-3 space-y-3">
               {boardColumns.map((lineColumn) => (
                 <div key={`${lineColumn.lineId}-timeline`}>
-                  <SingleTrackTimeline title={`Zeitachse ${lineColumn.lineName}`} entries={lineEvents.get(lineColumn.lineId) ?? []} range={timelineRange} fixedHeight />
+                  <LineTimeline
+                    title={`Zeitachse ${lineColumn.lineName}`}
+                    fillEntries={lineEvents.get(lineColumn.lineId) ?? []}
+                    makeEntries={lineMakeEvents.get(lineColumn.lineId) ?? []}
+                    range={timelineRange}
+                  />
                 </div>
               ))}
             </div>
@@ -311,13 +355,17 @@ function DashboardPage() {
               <article key={rw.rwId} className="rounded border border-slate-700 bg-slate-900/70 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
                 <h3 className="font-semibold text-amber-300">{rw.name} ({rw.rwId})</h3>
                 <p className="mt-1 text-xs text-slate-400">Drop Auftrag hier für Assignment.</p>
-                <SingleTrackTimeline
-                  title="RWTimeline"
-                  entries={rwEvents.get(rw.rwId) ?? []}
-                  range={timelineRange}
-                  onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => onDropRw(event, rw.rwId)}
-                />
+                {rwDerived.conflicts.some((conflict) => conflict.rwId === rw.rwId) ? (
+                  <div className="mt-3 rounded border border-rose-500/70 bg-rose-950/40 p-2 text-xs text-rose-200">Konflikt im RW-Zeitstrahl erkannt. Assignment blockiert.</div>
+                ) : (
+                  <SingleTrackTimeline
+                    title="RWTimeline"
+                    entries={rwEvents.get(rw.rwId) ?? []}
+                    range={timelineRange}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => onDropRw(event, rw.rwId)}
+                  />
+                )}
                 <div className="mt-3 space-y-2">
                   {entries.length === 0 ? <p className="text-sm text-slate-500">Keine Belegung.</p> : entries.map(({ order, window }) => (
                     <div key={order.id} className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
@@ -327,7 +375,7 @@ function DashboardPage() {
                           {statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                         </select>
                       </div>
-                      <p className="text-slate-400">Sperrbereich: {window.makeStart} → {window.fillEnd}</p>
+                      <p className="text-slate-400">Sperrbereich: {window.makeStart} → {window.cleanEnd}</p>
                     </div>
                   ))}
                 </div>
@@ -339,6 +387,81 @@ function DashboardPage() {
     </section>
   )
 }
+
+
+const toneClass = (tone: TimelineBlock['tone']) => {
+  if (tone === 'make') return 'border border-blue-300/80 bg-blue-500/70 text-slate-100'
+  if (tone === 'clean') return 'border border-orange-300/80 bg-orange-500/70 text-slate-900'
+  if (tone === 'hold' || tone === 'lineFill') return 'border border-slate-300/70 bg-slate-100/10 text-slate-100'
+  return 'border border-slate-500 bg-slate-600/40 text-slate-100'
+}
+
+const renderTimelineBlock = (entry: TimelineBlock, range: NonNullable<TimelineRange>, width: number, topClass = 'top-1') => {
+  const start = parseMs(entry.start)
+  const end = parseMs(entry.end)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
+  const left = ((start - range.min) / width) * 100
+  const blockWidth = Math.max(((end - start) / width) * 100, 2)
+  return (
+    <div
+      key={entry.id}
+      className={`absolute ${topClass} h-8 overflow-hidden rounded px-1 text-[10px] ${toneClass(entry.tone)}`}
+      style={{ left: `${left}%`, width: `${Math.min(blockWidth, 100 - left)}%` }}
+      title={`${entry.label}: ${entry.start} → ${entry.end}`}
+    >
+      {entry.label}
+    </div>
+  )
+}
+
+const LineTimeline = memo(function LineTimeline({
+  title,
+  fillEntries,
+  makeEntries,
+  range,
+}: {
+  title: string
+  fillEntries: TimelineBlock[]
+  makeEntries: TimelineBlock[]
+  range: TimelineRange
+}) {
+  if (!range) return null
+
+  const width = Math.max(range.max - range.min, 60_000)
+  const connectorTargets = makeEntries
+    .map((makeEntry) => {
+      const fillEntry = fillEntries.find((fill) => fill.orderId === makeEntry.orderId)
+      if (!fillEntry) return null
+      const makeEnd = parseMs(makeEntry.end)
+      const fillStart = parseMs(fillEntry.start)
+      if (!Number.isFinite(makeEnd) || !Number.isFinite(fillStart)) return null
+      const makeEndLeft = ((makeEnd - range.min) / width) * 100
+      const fillStartLeft = ((fillStart - range.min) / width) * 100
+      return { id: makeEntry.id, makeEndLeft, fillStartLeft }
+    })
+    .filter((entry): entry is { id: string; makeEndLeft: number; fillStartLeft: number } => Boolean(entry))
+
+  return (
+    <div className="mt-3 rounded border border-slate-700 bg-slate-950/70 p-2">
+      <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">{title}</p>
+      <div className="overflow-x-auto pb-1">
+        <div className="relative h-20 min-w-[42rem]">
+          <div className="absolute inset-x-0 top-1 h-8 rounded border border-slate-700/70" />
+          <div className="absolute inset-x-0 top-11 h-8 rounded border border-slate-700/70" />
+          {fillEntries.map((entry) => renderTimelineBlock(entry, range, width, 'top-1'))}
+          {makeEntries.map((entry) => renderTimelineBlock(entry, range, width, 'top-11'))}
+          {connectorTargets.map((connector) => (
+            <div
+              key={connector.id}
+              className="absolute top-9 h-2 border-t border-cyan-300/70"
+              style={{ left: `${Math.min(connector.makeEndLeft, connector.fillStartLeft)}%`, width: `${Math.max(Math.abs(connector.fillStartLeft - connector.makeEndLeft), 0.5)}%` }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+})
 
 const SingleTrackTimeline = memo(function SingleTrackTimeline({
   title,
@@ -372,23 +495,7 @@ const SingleTrackTimeline = memo(function SingleTrackTimeline({
       <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">{title}</p>
       <div className="overflow-x-auto pb-1">
         <div className={`relative min-w-[42rem] ${fixedHeight ? 'h-16' : 'h-10'}`}>
-          {entries.map((entry) => {
-            const start = parseMs(entry.start)
-            const end = parseMs(entry.end)
-            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
-            const left = ((start - range.min) / width) * 100
-            const blockWidth = Math.max(((end - start) / width) * 100, 2)
-            return (
-              <div
-                key={entry.id}
-                className={`absolute top-1 h-8 overflow-hidden rounded px-1 text-[10px] ${entry.tone === 'ghost' ? 'border border-dashed border-cyan-300 bg-cyan-300/20 text-cyan-200' : 'bg-amber-500/60 text-slate-900'}`}
-                style={{ left: `${left}%`, width: `${Math.min(blockWidth, 100 - left)}%` }}
-                title={`${entry.label}: ${entry.start} → ${entry.end}`}
-              >
-                {entry.label}
-              </div>
-            )
-          })}
+          {entries.map((entry) => renderTimelineBlock(entry, range, width))}
         </div>
       </div>
     </div>
