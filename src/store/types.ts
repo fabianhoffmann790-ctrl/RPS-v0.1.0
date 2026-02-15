@@ -48,6 +48,15 @@ export interface Order {
   id: string
   orderNo: string
   title: string
+  productId: string
+  articleNo: string
+  quantity: number
+  packageSize: '250ml' | '500ml' | '1l' | '5l'
+  lineId: string
+  lineName: string
+  lineRate: number
+  startTime: string
+  startPosition: string
   status: 'new' | 'planned' | 'done'
   actualQuantity: number
 }
