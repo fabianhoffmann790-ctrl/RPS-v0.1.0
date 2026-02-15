@@ -22,6 +22,51 @@ const packageRateKey = {
   '5l': 'l5000MlPerMin',
 } as const
 
+const toDateTimeLocal = (value: Date) => {
+  const pad = (input: number) => input.toString().padStart(2, '0')
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`
+}
+
+const minutesForOrder = (order: Order) => {
+  if (order.lineRate <= 0) return 0
+  return Math.max(order.quantity / order.lineRate, 0)
+}
+
+const withReflowForLine = (orders: Order[], lineId: string): Order[] => {
+  const lineOrders = orders
+    .filter((order) => order.lineId === lineId && order.status !== 'done')
+    .sort((a, b) => (a.sequence === b.sequence ? a.id.localeCompare(b.id) : a.sequence - b.sequence))
+
+  if (!lineOrders.length) return orders
+
+  const firstFixed = lineOrders.find((order) => order.startPolicy === 'fixed' && order.startTime)
+  let cursorMs = firstFixed ? Date.parse(firstFixed.startTime) : Number.NaN
+
+  if (Number.isNaN(cursorMs)) {
+    cursorMs = Date.now()
+  }
+
+  const updates = new Map<string, Pick<Order, 'fillStart' | 'fillEnd' | 'sequence'>>()
+
+  lineOrders.forEach((order, index) => {
+    const durationMs = minutesForOrder(order) * 60_000
+    const fillStart = toDateTimeLocal(new Date(cursorMs))
+    const fillEnd = toDateTimeLocal(new Date(cursorMs + durationMs))
+
+    updates.set(order.id, {
+      fillStart,
+      fillEnd,
+      sequence: index + 1,
+    })
+    cursorMs += durationMs
+  })
+
+  return orders.map((order) => {
+    const update = updates.get(order.id)
+    return update ? { ...order, ...update } : order
+  })
+}
+
 const initialState: AppState = {
   masterdata: {
     products: [
@@ -100,6 +145,10 @@ const sanitizeOrders = (orders: Order[], masterdata: MasterdataState): Order[] =
       lineRate: order.lineRate ?? (line ? line.rates[packageRateKey[packageSize]] : 0),
       startTime: order.startTime ?? '',
       startPosition: order.startPosition ?? '',
+      startPolicy: order.startPolicy ?? 'asap',
+      sequence: order.sequence ?? 0,
+      fillStart: order.fillStart,
+      fillEnd: order.fillEnd,
     }
   })
 }
@@ -151,11 +200,16 @@ interface StoreContextValue {
       | 'lineId'
       | 'lineName'
       | 'startTime'
+      | 'startPolicy'
       | 'startPosition'
     >,
   ) => ActionResult
-  editOrder: (orderId: string, updates: Partial<Pick<Order, 'title' | 'status'>>) => ActionResult
+  editOrder: (
+    orderId: string,
+    updates: Partial<Pick<Order, 'title' | 'status' | 'quantity' | 'packageSize' | 'productId' | 'articleNo' | 'startPolicy'>>,
+  ) => ActionResult
   moveOrder: (orderId: string, status: Order['status']) => ActionResult
+  reorderLineOrders: (lineId: string, orderedIds: string[]) => ActionResult
   assignOrder: (orderId: string, machine: string) => ActionResult
   unassignOrder: (orderId: string) => ActionResult
   reportIst: (orderId: string, actualQuantity: number) => ActionResult
@@ -252,7 +306,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     if (input.quantity <= 0) return fail('Menge muss größer als 0 sein.')
     if (!line) return fail('Linie ist ungültig.')
     if (rate <= 0) return fail('Die Linienrate für das gewählte Gebinde muss größer als 0 sein.')
-    if (!input.startTime) return fail('Startzeit ist erforderlich.')
+    if (input.startPolicy === 'fixed' && !input.startTime) return fail('Startzeit ist für Start-Policy "Fix" erforderlich.')
     if (!startPosition) return fail('Startposition ist erforderlich.')
 
     let orderNo = rawOrderNo
@@ -286,7 +340,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           lineName: line.name,
           lineRate: rate,
           startTime: input.startTime,
+          startPolicy: input.startPolicy,
           startPosition,
+          sequence: prev.orders.filter((order) => order.lineId === line.lineId).length + 1,
           status: 'new',
           actualQuantity: 0,
         },
@@ -300,6 +356,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       history: [...prev.history, historyMessage('CREATE', `Auftrag ${orderNo} erstellt (${line.name}, ${input.quantity} ${input.packageSize}).`)],
     }))
 
+    commit((prev) => ({ ...prev, orders: withReflowForLine(prev.orders, line.lineId) }))
+
     return { ok: true }
   }
 
@@ -307,11 +365,39 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     const order = state.orders.find((item) => item.id === orderId)
     if (!order) return fail('Auftrag nicht gefunden.')
 
+    const nextPackageSize = updates.packageSize ?? order.packageSize
+    const nextProductId = updates.productId ?? order.productId
+    const nextProduct = state.masterdata.products.find((item) => item.productId === nextProductId)
+    if (!nextProduct) return fail('Produkt nicht gefunden.')
+
+    const nextQuantity = updates.quantity ?? order.quantity
+    if (nextQuantity <= 0) return fail('Menge muss größer als 0 sein.')
+
+    const line = state.masterdata.lines.find((item) => item.lineId === order.lineId)
+    if (!line) return fail('Linie nicht gefunden.')
+    const nextLineRate = line.rates[packageRateKey[nextPackageSize]]
+
     commit((prev) => ({
       ...prev,
-      orders: prev.orders.map((item) => (item.id === orderId ? { ...item, ...updates } : item)),
+      orders: withReflowForLine(
+        prev.orders.map((item) =>
+          item.id === orderId
+            ? {
+                ...item,
+                ...updates,
+                quantity: nextQuantity,
+                packageSize: nextPackageSize,
+                productId: nextProduct.productId,
+                title: updates.title ?? nextProduct.name,
+                articleNo: updates.articleNo ?? nextProduct.articleNo,
+                lineRate: nextLineRate,
+              }
+            : item,
+        ),
+        order.lineId,
+      ),
       meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('EDIT', `Auftrag ${order.orderNo} bearbeitet.`)],
+      history: [...prev.history, historyMessage('EDIT', `Auftrag ${order.orderNo} bearbeitet (Karte).`)],
     }))
     return { ok: true }
   }
@@ -326,6 +412,37 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       meta: { ...prev.meta, lastError: null },
       history: [...prev.history, historyMessage('MOVE', `Auftrag ${order.orderNo} nach ${status} verschoben.`)],
     }))
+    return { ok: true }
+  }
+
+  const reorderLineOrders: StoreContextValue['reorderLineOrders'] = (lineId, orderedIds) => {
+    const lineOrders = state.orders
+      .filter((order) => order.lineId === lineId && order.status !== 'done')
+      .sort((a, b) => a.sequence - b.sequence)
+    const lineOrderIds = lineOrders.map((order) => order.id)
+
+    if (!lineOrders.length) return fail('Linie enthält keine Aufträge.')
+    if (lineOrderIds.length !== orderedIds.length) return fail('Ungültige Sortierungslänge.')
+    if (!orderedIds.every((id) => lineOrderIds.includes(id))) return fail('Sortierung enthält unbekannte Aufträge.')
+
+    commit((prev) => {
+      const mapped = prev.orders.map((order) => {
+        if (order.lineId !== lineId) return order
+        const index = orderedIds.indexOf(order.id)
+        return index === -1 ? order : { ...order, sequence: index + 1 }
+      })
+
+      const reflown = withReflowForLine(mapped, lineId)
+      const lineName = prev.masterdata.lines.find((line) => line.lineId === lineId)?.name ?? lineId
+
+      return {
+        ...prev,
+        orders: reflown,
+        meta: { ...prev.meta, lastError: null },
+        history: [...prev.history, historyMessage('MOVE', `Linienboard ${lineName} neu sortiert.`)],
+      }
+    })
+
     return { ok: true }
   }
 
@@ -420,6 +537,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       createOrder,
       editOrder,
       moveOrder,
+      reorderLineOrders,
       assignOrder,
       unassignOrder,
       reportIst,

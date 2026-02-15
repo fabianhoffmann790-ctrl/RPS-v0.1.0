@@ -56,7 +56,11 @@ export interface Order {
   lineName: string
   lineRate: number
   startTime: string
+  startPolicy: 'asap' | 'fixed'
   startPosition: string
+  fillStart?: string
+  fillEnd?: string
+  sequence: number
   status: 'new' | 'planned' | 'done'
   actualQuantity: number
 }
