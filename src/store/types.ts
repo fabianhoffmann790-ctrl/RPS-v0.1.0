@@ -67,11 +67,14 @@ export interface Order {
   sequence: number
   status: 'planned' | 'made' | 'running' | 'done'
   actualQuantity: number
+  orderType?: 'FILL' | 'LINE_ONLY'
+  archivedAt?: string
 }
 
 export interface Assignment {
   orderId: string
   machine: string
+  releasedAt?: string
 }
 
 export interface HistoryEvent {
@@ -91,6 +94,7 @@ export interface MetaSettingsState {
 export interface SchedulingSettingsState {
   shiftStartTime: string
   rwCleanMin: number
+  graceMin: number
 }
 
 export interface AppState {

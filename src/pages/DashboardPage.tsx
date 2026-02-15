@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react'
 import type { DragEvent, FormEvent } from 'react'
-import { useAppStore } from '../store/appStore'
+import { activeOrdersByLine, useAppStore } from '../store/appStore'
 import { deriveRwSegments, getOrderRwWindow } from '../store/scheduling'
 
 const packageOptions = [
@@ -97,15 +97,17 @@ function DashboardPage() {
     return base.slice(0, 4).map((line) => ({
       lineId: line.lineId,
       lineName: line.name,
-      orders: state.orders
-        .filter((order) => order.lineId === line.lineId && order.status !== 'done')
-        .sort((a, b) => (a.sequence === b.sequence ? a.id.localeCompare(b.id) : a.sequence - b.sequence)),
+      orders: activeOrdersByLine(state.orders, line.lineId),
     }))
   }, [state.masterdata.lines, state.orders])
 
   const assignmentByOrderId = useMemo(() => {
     const map = new Map<string, string>()
-    state.assignments.forEach((assignment) => map.set(assignment.orderId, assignment.machine))
+    state.assignments.forEach((assignment) => {
+      if (!assignment.releasedAt) {
+        map.set(assignment.orderId, assignment.machine)
+      }
+    })
     return map
   }, [state.assignments])
 
@@ -113,7 +115,7 @@ function DashboardPage() {
     return state.masterdata.stirrers.map((rw) => ({
       rw,
       entries: state.assignments
-        .filter((assignment) => assignment.machine === rw.rwId)
+        .filter((assignment) => assignment.machine === rw.rwId && !assignment.releasedAt)
         .map((assignment) => {
           const order = state.orders.find((item) => item.id === assignment.orderId)
           if (!order) return null
@@ -158,7 +160,9 @@ function DashboardPage() {
 
     state.orders.forEach((order) => {
       const assignment = state.assignments.find((item) => item.orderId === order.id)
+      if (order.orderType === 'LINE_ONLY') return
       if (!assignment) return
+      if (assignment.releasedAt) return
 
       const window = rwDerived.windowsByOrderId.get(order.id)
       if (!window) return

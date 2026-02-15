@@ -52,6 +52,7 @@ function StammdatenPage() {
   const [draft, setDraft] = useState<MasterdataState>(state.masterdata)
   const [shiftStartTime, setShiftStartTime] = useState(state.settings.shiftStartTime)
   const [rwCleanMin, setRwCleanMin] = useState(state.settings.rwCleanMin)
+  const [graceMin, setGraceMin] = useState(state.settings.graceMin)
 
   const validationMessage = useMemo(() => {
     if (!draft.products.length || !draft.lines.length || !draft.stirrers.length) {
@@ -89,7 +90,7 @@ function StammdatenPage() {
   const onSave = () => {
     const masterdataResult = updateMasterdata(draft)
     if (!masterdataResult.ok) return
-    updateSettings({ shiftStartTime, rwCleanMin })
+    updateSettings({ shiftStartTime, rwCleanMin, graceMin })
   }
 
   return (
@@ -107,6 +108,9 @@ function StammdatenPage() {
           </LabeledField>
           <LabeledField label="RW-Reinigung (min, global)" help="Default-Reinigungszeit nach FillEnd je Rührwerk.">
             <input type="number" min="0" step="1" value={rwCleanMin} onChange={(event) => setRwCleanMin(Number(event.target.value))} className="w-full rounded bg-slate-700 px-3 py-2 md:w-72" />
+          </LabeledField>
+          <LabeledField label="Grace-Minuten" help="Optionale Nachlaufzeit für Auto-Archivierung und RW-Freigabe nach Endzeitpunkten.">
+            <input type="number" min="0" step="1" value={graceMin} onChange={(event) => setGraceMin(Number(event.target.value))} className="w-full rounded bg-slate-700 px-3 py-2 md:w-72" />
           </LabeledField>
         </div>
       </div>
