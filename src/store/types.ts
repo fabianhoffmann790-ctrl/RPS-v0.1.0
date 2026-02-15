@@ -61,7 +61,7 @@ export interface Order {
   fillStart?: string
   fillEnd?: string
   sequence: number
-  status: 'new' | 'planned' | 'done'
+  status: 'planned' | 'made' | 'running' | 'done'
   actualQuantity: number
 }
 
@@ -75,6 +75,8 @@ export interface HistoryEvent {
   type: HistoryEventType
   message: string
   timestamp: string
+  orderNo?: string
+  productId?: string
 }
 
 export interface MetaSettingsState {

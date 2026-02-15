@@ -15,8 +15,16 @@ const startPolicyOptions = [
   { value: 'fixed', label: 'Fix' },
 ] as const
 
+const statusOptions = [
+  { value: 'planned', label: 'planned' },
+  { value: 'made', label: 'made' },
+  { value: 'running', label: 'running' },
+  { value: 'done', label: 'done' },
+] as const
+
 type PackageValue = (typeof packageOptions)[number]['value']
 type StartPolicyValue = (typeof startPolicyOptions)[number]['value']
+type StatusValue = (typeof statusOptions)[number]['value']
 type StoreState = ReturnType<typeof useAppStore>['state']
 type StoreOrder = StoreState['orders'][number]
 
@@ -31,7 +39,7 @@ const EmptyColumn = memo(function EmptyColumn() {
 })
 
 function DashboardPage() {
-  const { state, createOrder, editOrder, reorderLineOrders, assignOrder } = useAppStore()
+  const { state, createOrder, editOrder, reorderLineOrders, assignOrder, moveOrder, reportIst } = useAppStore()
   const [search, setSearch] = useState('')
   const [orderNo, setOrderNo] = useState('')
   const [quantity, setQuantity] = useState('')
@@ -163,23 +171,15 @@ function DashboardPage() {
         <h1 className="text-2xl font-bold text-cyan-300">Auftrag anlegen</h1>
       </div>
 
-      <form onSubmit={onCreateOrder} className="grid gap-4 rounded-xl border border-slate-700 bg-slate-800 p-5 md:grid-cols-2">
-        <div className="space-y-1 md:col-span-2">
-          <label className="text-sm text-slate-300">Produktsuche (Name oder Artikelnummer)</label>
-          <input list="product-options" className="w-full rounded bg-slate-700 px-3 py-2" value={search} onChange={(event) => setSearch(event.target.value)} />
-          <datalist id="product-options">
-            {state.masterdata.products.map((product) => (
-              <option key={product.productId} value={`${product.name} (${product.articleNo})`} />
-            ))}
-          </datalist>
-          <p className="text-xs text-slate-400">{selectedProduct ? `Ausgewählt: ${selectedProduct.name}` : search ? 'Kein exakter Treffer ausgewählt.' : 'Tippen für Autocomplete.'}</p>
-          {search && !selectedProduct && searchMatches.length > 0 ? <p className="text-xs text-slate-500">Treffer: {searchMatches.map((m) => m.name).join(', ')}</p> : null}
-        </div>
-
+      <form onSubmit={onCreateOrder} className="grid gap-3 rounded-xl border border-slate-700 bg-slate-800 p-5 md:grid-cols-2">
+        <label className="text-sm text-slate-300">Produktsuche (Name / Artikelnummer)
+          <input list="product-options" className="w-full rounded bg-slate-700 px-3 py-2" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="z. B. Standardprodukt oder ART-001" />
+          <datalist id="product-options">{searchMatches.map((product) => <option key={product.productId} value={`${product.name} (${product.articleNo})`} />)}</datalist>
+        </label>
         <label className="text-sm text-slate-300">Menge
           <input type="number" min={1} className="w-full rounded bg-slate-700 px-3 py-2" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
         </label>
-        <label className="text-sm text-slate-300">Gebindegröße
+        <label className="text-sm text-slate-300">Gebinde
           <select className="w-full rounded bg-slate-700 px-3 py-2" value={packageSize} onChange={(event) => setPackageSize(event.target.value as PackageValue)}>
             {packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
@@ -215,7 +215,21 @@ function DashboardPage() {
               <h3 className="font-semibold text-cyan-300">{lineColumn.lineName}</h3>
               <div className="mt-3 max-h-[28rem] space-y-2 overflow-y-auto pr-1">
                 {lineColumn.orders.length === 0 ? <EmptyColumn /> : lineColumn.orders.map((order) => (
-                  <OrderCard key={order.id} order={order} products={state.masterdata.products} stirrers={state.masterdata.stirrers} assignedRwId={assignmentByOrderId.get(order.id)} onDragStart={() => setDragOrderId(order.id)} onDragEnd={() => setDragOrderId(null)} onDrop={(event) => onDropCard(event, lineColumn, order.id)} onEdit={(updates) => editOrder(order.id, updates)} onAssign={(rwId) => assignOrder(order.id, rwId)} />
+                  <OrderCard
+                    key={order.id}
+                    order={order}
+                    products={state.masterdata.products}
+                    stirrers={state.masterdata.stirrers}
+                    assignedRwId={assignmentByOrderId.get(order.id)}
+                    onDragStart={() => setDragOrderId(order.id)}
+                    onDragEnd={() => setDragOrderId(null)}
+                    onDrop={(event) => onDropCard(event, lineColumn, order.id)}
+                    onEdit={(updates) => editOrder(order.id, updates)}
+                    onAssign={(rwId) => assignOrder(order.id, rwId)}
+                    onStatusChange={(status) => moveOrder(order.id, status)}
+                    onIstActual={(actualQuantity) => reportIst(order.id, { actualQuantity })}
+                    onIstRemaining={(remainingQuantity) => reportIst(order.id, { remainingQuantity })}
+                  />
                 ))}
               </div>
             </article>
@@ -231,29 +245,12 @@ function DashboardPage() {
               <h3 className="font-semibold text-amber-300">{rw.name} ({rw.rwId})</h3>
               <p className="mt-1 text-xs text-slate-400">Drop Auftrag hier für Assignment.</p>
               <div className="mt-3 space-y-2">
-                {entries.length === 0 ? <p className="text-sm text-slate-500">Keine Belegung.</p> : entries.map(({ order, window }) => {
-                  const make = Math.max(window.makeDurationMin, 0)
-                  const holdFill = Math.max((Date.parse(window.fillEnd) - Date.parse(window.makeEnd)) / 60_000, 1)
-                  const total = Math.max(make + holdFill, 1)
-                  return (
-                    <div key={order.id} className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
-                      <p className="font-semibold text-slate-100">{order.orderNo}</p>
-                      <p className="text-slate-400">Sperrbereich: {window.makeStart} → {window.fillEnd}</p>
-                      <div className="mt-2 flex h-3 overflow-hidden rounded">
-                        <div className="bg-cyan-500" style={{ width: `${(make / total) * 100}%` }} title="Herstellung" />
-                        <div className="bg-violet-500" style={{ width: `${(holdFill / total) * 100}%` }} title="Halten + Abfüllen" />
-                      </div>
-                      <div className="mt-1 flex justify-between text-[11px] text-slate-400">
-                        <span>MakeStart {window.makeStart}</span>
-                        <span>MakeEnd {window.makeEnd}</span>
-                      </div>
-                      <div className="flex justify-between text-[11px] text-slate-400">
-                        <span>FillStart {window.fillStart}</span>
-                        <span>FillEnd {window.fillEnd}</span>
-                      </div>
-                    </div>
-                  )
-                })}
+                {entries.length === 0 ? <p className="text-sm text-slate-500">Keine Belegung.</p> : entries.map(({ order, window }) => (
+                  <div key={order.id} className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
+                    <p className="font-semibold text-slate-100">{order.orderNo}</p>
+                    <p className="text-slate-400">Sperrbereich: {window.makeStart} → {window.fillEnd}</p>
+                  </div>
+                ))}
               </div>
             </article>
           ))}
@@ -273,6 +270,9 @@ const OrderCard = memo(function OrderCard({
   onDrop,
   onEdit,
   onAssign,
+  onStatusChange,
+  onIstActual,
+  onIstRemaining,
 }: {
   order: StoreOrder
   products: StoreState['masterdata']['products']
@@ -283,21 +283,38 @@ const OrderCard = memo(function OrderCard({
   onDrop: (event: DragEvent<HTMLDivElement>) => void
   onEdit: (updates: Partial<Pick<StoreOrder, 'quantity' | 'packageSize' | 'productId' | 'startPolicy'>>) => void
   onAssign: (rwId: string) => void
+  onStatusChange: (status: StatusValue) => void
+  onIstActual: (actualQuantity: number) => void
+  onIstRemaining: (remainingQuantity: number) => void
 }) {
   const [selectedRw, setSelectedRw] = useState(assignedRwId ?? stirrers[0]?.rwId ?? '')
+  const [actualInput, setActualInput] = useState(order.actualQuantity ? String(order.actualQuantity) : '')
+  const [remainingInput, setRemainingInput] = useState('')
+  const lockDrag = (order.status === 'made' || order.status === 'running') && (!order.fillEnd || Date.parse(order.fillEnd) > Date.now())
 
   return (
     <div onDragOver={(event) => event.preventDefault()} onDrop={onDrop} className="rounded border border-slate-700 bg-slate-950/80 p-3 text-sm">
-      <div draggable onDragStart={onDragStart} onDragEnd={onDragEnd} className="mb-2 cursor-grab rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">↕ Reihenfolge ändern / auf RW ziehen</div>
-      <p className="font-semibold text-slate-100">{order.orderNo} · {order.title}</p>
+      <div draggable={!lockDrag} onDragStart={onDragStart} onDragEnd={onDragEnd} className={`mb-2 rounded px-2 py-1 text-xs text-slate-300 ${lockDrag ? 'cursor-not-allowed bg-red-900/50' : 'cursor-grab bg-slate-800'}`}>
+        {lockDrag ? '🔒 made/running: Umhängen gesperrt bis FillEnd' : '↕ Reihenfolge ändern / auf RW ziehen'}
+      </div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <p className="font-semibold text-slate-100">{order.orderNo} · {order.title}</p>
+        <span className="rounded bg-slate-800 px-2 py-1 text-xs text-cyan-300">{order.status}</span>
+      </div>
       <p className="text-xs text-slate-400">Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}</p>
       <p className="text-xs text-amber-300">RW: {assignedRwId ?? 'nicht zugewiesen'}</p>
       <div className="mt-2 grid grid-cols-2 gap-2">
+        <label className="text-xs text-slate-300">Status<select value={order.status} onChange={(event) => onStatusChange(event.target.value as StatusValue)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <div className="text-xs text-slate-300">IST {order.actualQuantity}/{order.quantity}</div>
         <label className="text-xs text-slate-300">Menge<input type="number" min={1} value={order.quantity} onChange={(event) => { const next = Number(event.target.value); if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next }) }} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
         <label className="text-xs text-slate-300">Gebinde<select value={order.packageSize} onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         <label className="col-span-2 text-xs text-slate-300">Produkt<select value={order.productId} onChange={(event) => onEdit({ productId: event.target.value })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{products.map((product) => <option key={product.productId} value={product.productId}>{product.name} ({product.articleNo})</option>)}</select></label>
         <label className="col-span-2 text-xs text-slate-300">Start-Policy<select value={order.startPolicy} onChange={(event) => onEdit({ startPolicy: event.target.value as StartPolicyValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{startPolicyOptions.map((policy) => <option key={policy.value} value={policy.value}>{policy.label}</option>)}</select></label>
-        <div className="col-span-2 grid grid-cols-3 gap-2 items-end">
+        <label className="text-xs text-slate-300">already filled<input type="number" min={0} value={actualInput} onChange={(event) => setActualInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
+        <button type="button" onClick={() => { const next = Number(actualInput); if (!Number.isNaN(next)) onIstActual(next) }} className="rounded bg-cyan-600 px-2 py-1 text-xs font-semibold">IST übernehmen</button>
+        <label className="text-xs text-slate-300">Restmenge<input type="number" min={0} value={remainingInput} onChange={(event) => setRemainingInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
+        <button type="button" onClick={() => { const next = Number(remainingInput); if (!Number.isNaN(next)) onIstRemaining(next) }} className="rounded bg-violet-600 px-2 py-1 text-xs font-semibold">Rest übernehmen</button>
+        <div className="col-span-2 grid grid-cols-3 items-end gap-2">
           <label className="col-span-2 text-xs text-slate-300">RW zuweisen<select value={selectedRw} onChange={(event) => setSelectedRw(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{stirrers.map((rw) => <option key={rw.rwId} value={rw.rwId}>{rw.name} ({rw.rwId})</option>)}</select></label>
           <button type="button" className="rounded bg-amber-400 px-2 py-1 text-xs font-semibold text-slate-900" onClick={() => onAssign(selectedRw)}>Assign</button>
         </div>
