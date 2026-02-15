@@ -56,6 +56,7 @@ export const getOrderRwWindow = (
   settings: SchedulingSettingsState,
   rwId: string,
 ): OrderRwWindow | null => {
+  if (order.orderType === 'LINE_ONLY') return null
   const fillStartMs = parseMs(order.fillStart)
   const fillEndMs = parseMs(order.fillEnd)
   if (!Number.isFinite(fillStartMs) || !Number.isFinite(fillEndMs) || fillEndMs <= fillStartMs) return null
@@ -110,6 +111,7 @@ export const deriveRwSegments = ({
   const windowsByOrderId = new Map<string, OrderRwWindow>()
 
   assignments.forEach((assignment) => {
+    if (assignment.releasedAt) return
     const order = orders.find((item) => item.id === assignment.orderId)
     if (!order) return
 

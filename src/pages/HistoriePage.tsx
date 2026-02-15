@@ -111,6 +111,16 @@ function HistoriePage() {
       })
   }, [fromFilter, orderNoFilter, productFilter, state.history, toFilter])
 
+  const archivedOrders = useMemo(() => {
+    return [...state.orders]
+      .filter((order) => Boolean(order.archivedAt))
+      .sort((a, b) => {
+        const aMs = parseDateValue(a.archivedAt)?.getTime() ?? 0
+        const bMs = parseDateValue(b.archivedAt)?.getTime() ?? 0
+        return bMs - aMs
+      })
+  }, [state.orders])
+
   const totalMinutes = Math.max(
     (timelineData.workEnd.getTime() - timelineData.workStart.getTime()) / 60_000,
     (WORK_END_HOUR - WORK_START_HOUR) * MINUTES_IN_HOUR,
@@ -176,6 +186,20 @@ function HistoriePage() {
               <div className="text-xs text-slate-400">{toLocalDisplay(event.timestamp)}</div>
             </li>
           ))}
+        </ul>
+      </div>
+
+      <div className="rounded-xl border border-slate-700 bg-slate-800 p-5">
+        <h2 className="mb-3 text-lg font-semibold text-cyan-300">Archivierte Aufträge</h2>
+        <ul className="space-y-2">
+          {archivedOrders.map((order) => (
+            <li key={order.id} className="rounded border border-slate-700 bg-slate-900/70 p-3 text-sm">
+              <div className="font-semibold text-cyan-300">{order.orderNo} · {order.status}</div>
+              <div className="text-xs text-slate-300">FillStart: {toLocalDisplay(order.fillStart)} · FillEnd: {toLocalDisplay(order.fillEnd)}</div>
+              <div className="text-xs text-slate-400">Archiviert: {toLocalDisplay(order.archivedAt)}</div>
+            </li>
+          ))}
+          {!archivedOrders.length ? <li className="text-sm text-slate-400">Noch keine archivierten Aufträge.</li> : null}
         </ul>
       </div>
 

@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type {
   ActionResult,
@@ -39,7 +39,23 @@ const isValidShiftStartTime = (value: string) => /^([01]\d|2[0-3]):([0-5]\d)$/.t
 const sanitizeSettings = (input?: Partial<SchedulingSettingsState>): SchedulingSettingsState => ({
   shiftStartTime: isValidShiftStartTime(input?.shiftStartTime ?? '') ? input!.shiftStartTime! : '06:00',
   rwCleanMin: Number.isFinite(input?.rwCleanMin) && (input?.rwCleanMin ?? 0) >= 0 ? (input?.rwCleanMin as number) : 30,
+  graceMin: Number.isFinite(input?.graceMin) && (input?.graceMin ?? 0) >= 0 ? (input?.graceMin as number) : 0,
 })
+
+const parseDateTimeMs = (value?: string) => {
+  if (!value) return Number.NaN
+  const localMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/)
+  if (localMatch) {
+    const [, year, month, day, hour, minute] = localMatch
+    return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), 0, 0).getTime()
+  }
+  return Date.parse(value)
+}
+
+export const activeOrdersByLine = (orders: Order[], lineId: string) =>
+  orders
+    .filter((order) => order.lineId === lineId && !order.archivedAt)
+    .sort((a, b) => (a.sequence === b.sequence ? a.id.localeCompare(b.id) : a.sequence - b.sequence))
 
 const getShiftAnchorMs = (shiftStartTime: string) => {
   const [hours, minutes] = shiftStartTime.split(':').map((value) => Number(value))
@@ -50,7 +66,7 @@ const getShiftAnchorMs = (shiftStartTime: string) => {
 
 const withReflowForLine = (orders: Order[], lineId: string, shiftStartTime: string): Order[] => {
   const lineOrders = orders
-    .filter((order) => order.lineId === lineId && activeStatuses.includes(order.status))
+    .filter((order) => order.lineId === lineId && activeStatuses.includes(order.status) && !order.archivedAt)
     .sort((a, b) => (a.sequence === b.sequence ? a.id.localeCompare(b.id) : a.sequence - b.sequence))
 
   if (!lineOrders.length) return orders
@@ -112,6 +128,7 @@ const initialState: AppState = {
   settings: {
     shiftStartTime: '06:00',
     rwCleanMin: 30,
+    graceMin: 0,
   },
 }
 
@@ -171,6 +188,8 @@ const sanitizeOrders = (orders: Order[], masterdata: MasterdataState): Order[] =
       manualStartWarning: order.manualStartWarning ?? false,
       status: ['planned', 'made', 'running', 'done'].includes(order.status) ? order.status : 'planned',
       actualQuantity: order.actualQuantity ?? 0,
+      orderType: order.orderType === 'LINE_ONLY' ? 'LINE_ONLY' : 'FILL',
+      archivedAt: order.archivedAt,
     }
   })
 }
@@ -183,7 +202,10 @@ const mergeState = (parsed: Partial<AppState> & { masterdata?: Partial<Masterdat
     ...parsed,
     masterdata,
     orders: sanitizeOrders(parsed.orders ?? [], masterdata),
-    assignments: parsed.assignments ?? [],
+    assignments: (parsed.assignments ?? []).map((assignment) => ({
+      ...assignment,
+      releasedAt: assignment.releasedAt,
+    })),
     history: (parsed.history ?? []).map((event) => ({
       ...event,
       orderNo: event.orderNo,
@@ -386,6 +408,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           sequence: prev.orders.filter((order) => order.lineId === line.lineId).length + 1,
           status: 'planned',
           actualQuantity: 0,
+          orderType: 'FILL',
         },
       ],
       meta: {
@@ -464,7 +487,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
 
   const reorderLineOrders: StoreContextValue['reorderLineOrders'] = (lineId, orderedIds) => {
     const lineOrders = state.orders
-      .filter((order) => order.lineId === lineId && activeStatuses.includes(order.status))
+      .filter((order) => order.lineId === lineId && activeStatuses.includes(order.status) && !order.archivedAt)
       .sort((a, b) => a.sequence - b.sequence)
     const lineOrderIds = lineOrders.map((order) => order.id)
 
@@ -504,12 +527,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     if (!order) return fail('Auftrag nicht gefunden.')
     const rw = state.masterdata.stirrers.find((item) => item.rwId === machine)
     if (!rw) return fail('Rührwerk unbekannt.')
+    if (order.orderType === 'LINE_ONLY') return fail('LINE_ONLY-Aufträge können keinem Rührwerk zugewiesen werden.')
 
     const nextWindow = getOrderRwWindow(order, state.masterdata, state.settings, machine)
     if (!nextWindow) return fail('Zuweisung blockiert: Für den Auftrag fehlen Fill-Zeiten.')
 
     const conflicts = state.assignments
-      .filter((item) => item.machine === machine && item.orderId !== orderId)
+      .filter((item) => item.machine === machine && item.orderId !== orderId && !item.releasedAt)
       .map((item) => ({ assignment: item, order: state.orders.find((orderItem) => orderItem.id === item.orderId) }))
       .filter((item): item is { assignment: { orderId: string; machine: string }; order: Order } => Boolean(item.order))
 
@@ -622,7 +646,11 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     const sanitized = sanitizeSettings(settings)
 
     commit((prev) => {
-      if (prev.settings.shiftStartTime === sanitized.shiftStartTime && prev.settings.rwCleanMin === sanitized.rwCleanMin) {
+      if (
+        prev.settings.shiftStartTime === sanitized.shiftStartTime &&
+        prev.settings.rwCleanMin === sanitized.rwCleanMin &&
+        prev.settings.graceMin === sanitized.graceMin
+      ) {
         return { ...prev, meta: { ...prev.meta, lastError: null } }
       }
 
@@ -637,7 +665,13 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         settings: sanitized,
         orders: reflownOrders,
         meta: { ...prev.meta, lastError: null },
-        history: [...prev.history, historyMessage('SETTINGS', `Planungs-Settings aktualisiert (shiftStartTime: ${sanitized.shiftStartTime}, rwCleanMin: ${sanitized.rwCleanMin}).`)],
+        history: [
+          ...prev.history,
+          historyMessage(
+            'SETTINGS',
+            `Planungs-Settings aktualisiert (shiftStartTime: ${sanitized.shiftStartTime}, rwCleanMin: ${sanitized.rwCleanMin}, graceMin: ${sanitized.graceMin}).`,
+          ),
+        ],
       }
     })
 
@@ -682,6 +716,71 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     }))
     return JSON.stringify(next, null, 2)
   }
+
+  useEffect(() => {
+    const finalize = () => {
+      commit((prev) => {
+        const nowMs = Date.now()
+        const graceMs = Math.max(prev.settings.graceMin, 0) * 60_000
+        const nowIso = new Date(nowMs).toISOString()
+        let changed = false
+
+        const nextOrders = prev.orders.map((order) => {
+          if (order.archivedAt) return order
+          const fillEndMs = parseDateTimeMs(order.fillEnd)
+          if (!Number.isFinite(fillEndMs) || nowMs < fillEndMs + graceMs) return order
+          changed = true
+          return { ...order, status: 'done' as const, archivedAt: nowIso }
+        })
+
+        const nextAssignments = prev.assignments.map((assignment) => {
+          if (assignment.releasedAt) return assignment
+          const order = nextOrders.find((item) => item.id === assignment.orderId)
+          if (!order || order.orderType === 'LINE_ONLY') return assignment
+          const fillEndMs = parseDateTimeMs(order.fillEnd)
+          if (!Number.isFinite(fillEndMs)) return assignment
+          const cleanEndMs = fillEndMs + Math.max(prev.settings.rwCleanMin, 0) * 60_000
+          if (nowMs < cleanEndMs + graceMs) return assignment
+          changed = true
+          return { ...assignment, releasedAt: nowIso }
+        })
+
+        if (!changed) return prev
+
+        const archiveEvents = nextOrders
+          .filter((order, index) => !prev.orders[index].archivedAt && order.archivedAt)
+          .map((order) =>
+            historyMessage('MOVE', `Auftrag ${order.orderNo} nach FillEnd automatisch archiviert.`, {
+              orderNo: order.orderNo,
+              productId: order.productId,
+            }),
+          )
+
+        const releaseEvents = nextAssignments
+          .filter((assignment, index) => !prev.assignments[index].releasedAt && assignment.releasedAt)
+          .map((assignment) => {
+            const order = nextOrders.find((item) => item.id === assignment.orderId)
+            if (!order) return null
+            return historyMessage('UNASSIGN', `RW-Zuweisung für Auftrag ${order.orderNo} nach CleanEnd automatisch freigegeben.`, {
+              orderNo: order.orderNo,
+              productId: order.productId,
+            })
+          })
+          .filter((item): item is NonNullable<typeof item> => Boolean(item))
+
+        return {
+          ...prev,
+          orders: nextOrders,
+          assignments: nextAssignments,
+          history: [...prev.history, ...archiveEvents, ...releaseEvents],
+        }
+      })
+    }
+
+    finalize()
+    const timerId = window.setInterval(finalize, 45_000)
+    return () => window.clearInterval(timerId)
+  }, [])
 
   const value = useMemo(
     () => ({
