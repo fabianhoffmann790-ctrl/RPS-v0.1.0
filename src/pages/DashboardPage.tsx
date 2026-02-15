@@ -36,6 +36,8 @@ interface TimelineBlock {
   tone: 'solid' | 'ghost'
 }
 
+type TimelineRange = { min: number; max: number } | null
+
 const statusLockMap: Record<StatusValue, boolean> = {
   planned: false,
   made: true,
@@ -133,6 +135,45 @@ function DashboardPage() {
     }))
   }, [state.assignments, state.masterdata, state.orders])
 
+  const lineEvents = useMemo(() => {
+    const byLineId = new Map<string, TimelineBlock[]>()
+
+    boardColumns.forEach((column) => {
+      const entries = column.orders
+        .filter((order) => Boolean(order.fillStart && order.fillEnd))
+        .map((order) => ({
+          id: order.id,
+          label: order.orderNo,
+          start: order.fillStart as string,
+          end: order.fillEnd as string,
+          tone: 'solid' as const,
+        }))
+
+      byLineId.set(column.lineId, entries)
+    })
+
+    return byLineId
+  }, [boardColumns])
+
+  const rwEvents = useMemo(() => {
+    const byRwId = new Map<string, TimelineBlock[]>()
+
+    rwColumns.forEach(({ rw, entries }) => {
+      byRwId.set(
+        rw.rwId,
+        entries.map(({ order, window }) => ({
+          id: order.id,
+          label: order.orderNo,
+          start: window.makeStart,
+          end: window.fillEnd,
+          tone: 'solid' as const,
+        })),
+      )
+    })
+
+    return byRwId
+  }, [rwColumns])
+
   const selectedOrder = useMemo(
     () => (selectedOrderId ? state.orders.find((order) => order.id === selectedOrderId) ?? null : null),
     [selectedOrderId, state.orders],
@@ -193,14 +234,15 @@ function DashboardPage() {
   }, [selectedOrder, selectedOrderWindow, selectedOrderAssignment, state.assignments, state.masterdata, state.orders])
 
   const timelineRange = useMemo(() => {
-    const windows = [
-      ...rwColumns.flatMap((column) => column.entries.map((entry) => entry.window)),
-      ...(selectedOrderWindow ? [selectedOrderWindow] : []),
-    ]
-    const values = windows.flatMap((window) => [parseMs(window.makeStart), parseMs(window.fillEnd)]).filter(Number.isFinite)
+    const values = [
+      ...Array.from(lineEvents.values()).flatMap((events) => events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)])),
+      ...Array.from(rwEvents.values()).flatMap((events) => events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)])),
+      ...(selectedOrderWindow ? [parseMs(selectedOrderWindow.makeStart), parseMs(selectedOrderWindow.fillEnd)] : []),
+    ].filter(Number.isFinite)
+
     if (!values.length) return null
     return { min: Math.min(...values), max: Math.max(...values) }
-  }, [rwColumns, selectedOrderWindow])
+  }, [lineEvents, rwEvents, selectedOrderWindow])
 
   const onCreateOrder = (event: FormEvent) => {
     event.preventDefault()
@@ -329,6 +371,7 @@ function DashboardPage() {
                       />
                     ))}
                   </div>
+                  <SingleTrackTimeline title="LineTimeline" entries={lineEvents.get(lineColumn.lineId) ?? []} range={timelineRange} />
                 </article>
               ))}
             </div>
@@ -338,13 +381,7 @@ function DashboardPage() {
             <h2 className="mb-3 text-xl font-semibold">RW-Board (unten)</h2>
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {rwColumns.map(({ rw, entries }) => {
-                const timelineEntries: TimelineBlock[] = entries.map(({ order, window }) => ({
-                  id: order.id,
-                  label: order.orderNo,
-                  start: window.makeStart,
-                  end: window.fillEnd,
-                  tone: 'solid',
-                }))
+                const timelineEntries = [...(rwEvents.get(rw.rwId) ?? [])]
 
                 if (selectedOrder && previewRwId === rw.rwId && selectedOrderWindow) {
                   timelineEntries.push({
@@ -360,7 +397,13 @@ function DashboardPage() {
                   <article key={rw.rwId} className="rounded border border-slate-700 bg-slate-900/70 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
                     <h3 className="font-semibold text-amber-300">{rw.name} ({rw.rwId})</h3>
                     <p className="mt-1 text-xs text-slate-400">Drop Auftrag hier für Assignment.</p>
-                    <TimelineLane entries={timelineEntries} range={timelineRange} />
+                    <SingleTrackTimeline
+                      title="RWTimeline"
+                      entries={timelineEntries}
+                      range={timelineRange}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => onDropRw(event, rw.rwId)}
+                    />
                     <div className="mt-3 space-y-2">
                       {entries.length === 0 ? <p className="text-sm text-slate-500">Keine Belegung.</p> : entries.map(({ order, window }) => (
                         <div key={order.id} className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
@@ -403,13 +446,34 @@ function DashboardPage() {
   )
 }
 
-const TimelineLane = memo(function TimelineLane({ entries, range }: { entries: TimelineBlock[]; range: { min: number; max: number } | null }) {
-  if (!range || entries.length === 0) return null
+const SingleTrackTimeline = memo(function SingleTrackTimeline({
+  title,
+  entries,
+  range,
+  onDragOver,
+  onDrop,
+}: {
+  title: 'LineTimeline' | 'RWTimeline'
+  entries: TimelineBlock[]
+  range: TimelineRange
+  onDragOver?: (event: DragEvent<HTMLDivElement>) => void
+  onDrop?: (event: DragEvent<HTMLDivElement>) => void
+}) {
+  if (!range) return null
+
+  if (entries.length === 0) {
+    return (
+      <div className="mt-3 rounded border border-slate-700 bg-slate-950/40 p-2" onDragOver={onDragOver} onDrop={onDrop}>
+        <p className="text-[11px] text-slate-500">{title}: keine Events im aktuellen Zeitfenster.</p>
+      </div>
+    )
+  }
 
   const width = Math.max(range.max - range.min, 60_000)
 
   return (
-    <div className="mt-3 rounded border border-slate-700 bg-slate-950/70 p-2">
+    <div className="mt-3 rounded border border-slate-700 bg-slate-950/70 p-2" onDragOver={onDragOver} onDrop={onDrop}>
+      <p className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">{title}</p>
       <div className="relative h-10">
         {entries.map((entry) => {
           const start = parseMs(entry.start)
