@@ -35,7 +35,7 @@ const minutesForOrder = (order: Order) => {
 
 const withReflowForLine = (orders: Order[], lineId: string): Order[] => {
   const lineOrders = orders
-    .filter((order) => order.lineId === lineId && order.status !== 'done')
+    .filter((order) => order.lineId === lineId && activeStatuses.includes(order.status))
     .sort((a, b) => (a.sequence === b.sequence ? a.id.localeCompare(b.id) : a.sequence - b.sequence))
 
   if (!lineOrders.length) return orders
@@ -150,6 +150,8 @@ const sanitizeOrders = (orders: Order[], masterdata: MasterdataState): Order[] =
       sequence: order.sequence ?? 0,
       fillStart: order.fillStart,
       fillEnd: order.fillEnd,
+      status: ['planned', 'made', 'running', 'done'].includes(order.status) ? order.status : 'planned',
+      actualQuantity: order.actualQuantity ?? 0,
     }
   })
 }
@@ -163,7 +165,11 @@ const mergeState = (parsed: Partial<AppState> & { masterdata?: Partial<Masterdat
     masterdata,
     orders: sanitizeOrders(parsed.orders ?? [], masterdata),
     assignments: parsed.assignments ?? [],
-    history: parsed.history ?? [],
+    history: (parsed.history ?? []).map((event) => ({
+      ...event,
+      orderNo: event.orderNo,
+      productId: event.productId,
+    })),
     meta: {
       ...initialState.meta,
       ...parsed.meta,
@@ -213,7 +219,7 @@ interface StoreContextValue {
   reorderLineOrders: (lineId: string, orderedIds: string[]) => ActionResult
   assignOrder: (orderId: string, machine: string) => ActionResult
   unassignOrder: (orderId: string) => ActionResult
-  reportIst: (orderId: string, actualQuantity: number) => ActionResult
+  reportIst: (orderId: string, input: { actualQuantity?: number; remainingQuantity?: number }) => ActionResult
   updateMasterdata: (masterdata: MasterdataState) => ActionResult
   importData: (rawJson: string) => ActionResult
   exportData: () => string
@@ -221,12 +227,24 @@ interface StoreContextValue {
 
 const AppStoreContext = createContext<StoreContextValue | null>(null)
 
-const historyMessage = (type: HistoryEventType, message: string) => ({
+const historyMessage = (
+  type: HistoryEventType,
+  message: string,
+  details?: Pick<NonNullable<AppState['history'][number]>, 'orderNo' | 'productId'>,
+) => ({
   id: createId(),
   type,
   message,
   timestamp: new Date().toISOString(),
+  ...details,
 })
+
+const activeStatuses: Order['status'][] = ['planned', 'made', 'running']
+const isOrderLockedForMove = (order: Order) => {
+  if (order.status !== 'made' && order.status !== 'running') return false
+  if (!order.fillEnd) return true
+  return Date.parse(order.fillEnd) > Date.now()
+}
 
 const hasUnique = (values: string[]) => new Set(values).size === values.length
 
@@ -344,7 +362,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
           startPolicy: input.startPolicy,
           startPosition,
           sequence: prev.orders.filter((order) => order.lineId === line.lineId).length + 1,
-          status: 'new',
+          status: 'planned',
           actualQuantity: 0,
         },
       ],
@@ -353,7 +371,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         usedOrderNumbers: [...prev.meta.usedOrderNumbers, orderNo],
         lastError: null,
       },
-      history: [...prev.history, historyMessage('CREATE', `Auftrag ${orderNo} erstellt (${line.name}, ${input.quantity} ${input.packageSize}).`)],
+      history: [...prev.history, historyMessage('CREATE', `Auftrag ${orderNo} erstellt (${line.name}, ${input.quantity} ${input.packageSize}).`, { orderNo, productId: input.productId })],
     }))
 
     commit((prev) => ({ ...prev, orders: withReflowForLine(prev.orders, line.lineId) }))
@@ -364,6 +382,8 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const editOrder: StoreContextValue['editOrder'] = (orderId, updates) => {
     const order = state.orders.find((item) => item.id === orderId)
     if (!order) return fail('Auftrag nicht gefunden.')
+
+    if (isOrderLockedForMove(order) && updates.startPolicy !== undefined) return fail('Auftrag im Status made/running darf bis FillEnd nicht umgehängt werden.')
 
     const nextPackageSize = updates.packageSize ?? order.packageSize
     const nextProductId = updates.productId ?? order.productId
@@ -397,7 +417,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
         order.lineId,
       ),
       meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('EDIT', `Auftrag ${order.orderNo} bearbeitet (Karte).`)],
+      history: [...prev.history, historyMessage('EDIT', `Auftrag ${order.orderNo} bearbeitet (Karte).`, { orderNo: order.orderNo, productId: nextProduct.productId })],
     }))
     return { ok: true }
   }
@@ -406,24 +426,34 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     const order = state.orders.find((item) => item.id === orderId)
     if (!order) return fail('Auftrag nicht gefunden.')
 
+    if (isOrderLockedForMove(order) && status !== order.status) {
+      return fail('Auftrag im Status made/running darf bis FillEnd nicht umgehängt werden.')
+    }
+
     commit((prev) => ({
       ...prev,
       orders: prev.orders.map((item) => (item.id === orderId ? { ...item, status } : item)),
       meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('MOVE', `Auftrag ${order.orderNo} nach ${status} verschoben.`)],
+      history: [...prev.history, historyMessage('MOVE', `Auftrag ${order.orderNo} nach ${status} verschoben.`, { orderNo: order.orderNo, productId: order.productId })],
     }))
     return { ok: true }
   }
 
   const reorderLineOrders: StoreContextValue['reorderLineOrders'] = (lineId, orderedIds) => {
     const lineOrders = state.orders
-      .filter((order) => order.lineId === lineId && order.status !== 'done')
+      .filter((order) => order.lineId === lineId && activeStatuses.includes(order.status))
       .sort((a, b) => a.sequence - b.sequence)
     const lineOrderIds = lineOrders.map((order) => order.id)
 
     if (!lineOrders.length) return fail('Linie enthält keine Aufträge.')
     if (lineOrderIds.length !== orderedIds.length) return fail('Ungültige Sortierungslänge.')
     if (!orderedIds.every((id) => lineOrderIds.includes(id))) return fail('Sortierung enthält unbekannte Aufträge.')
+
+    const hasLockedOrder = lineOrders.some((order) => isOrderLockedForMove(order))
+    const orderingChanged = lineOrderIds.some((id, index) => orderedIds[index] !== id)
+    if (hasLockedOrder && orderingChanged) {
+      return fail('Aufträge im Status made/running dürfen bis FillEnd nicht umgehängt werden.')
+    }
 
     commit((prev) => {
       const mapped = prev.orders.map((order) => {
@@ -475,7 +505,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       ...prev,
       assignments: [...prev.assignments.filter((item) => item.orderId !== orderId), { orderId, machine }],
       meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('ASSIGN', `Auftrag ${order.orderNo} zu ${rw.name} (${rw.rwId}) zugewiesen.`)],
+      history: [...prev.history, historyMessage('ASSIGN', `Auftrag ${order.orderNo} zu ${rw.name} (${rw.rwId}) zugewiesen.`, { orderNo: order.orderNo, productId: order.productId })],
     }))
     return { ok: true }
   }
@@ -488,24 +518,68 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       ...prev,
       assignments: prev.assignments.filter((item) => item.orderId !== orderId),
       meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('UNASSIGN', `Zuweisung für Auftrag ${order.orderNo} entfernt.`)],
+      history: [...prev.history, historyMessage('UNASSIGN', `Zuweisung für Auftrag ${order.orderNo} entfernt.`, { orderNo: order.orderNo, productId: order.productId })],
     }))
     return { ok: true }
   }
 
-  const reportIst: StoreContextValue['reportIst'] = (orderId, actualQuantity) => {
+  const reportIst: StoreContextValue['reportIst'] = (orderId, input) => {
     const order = state.orders.find((item) => item.id === orderId)
     if (!order) return fail('Auftrag nicht gefunden.')
-    if (actualQuantity < 0) return fail('IST-Menge darf nicht negativ sein.')
 
-    commit((prev) => ({
-      ...prev,
-      orders: prev.orders.map((item) => (item.id === orderId ? { ...item, actualQuantity } : item)),
-      meta: { ...prev.meta, lastError: null },
-      history: [...prev.history, historyMessage('IST', `IST-Menge für ${order.orderNo} auf ${actualQuantity} gesetzt.`)],
-    }))
+    const hasActual = typeof input.actualQuantity === 'number'
+    const hasRemaining = typeof input.remainingQuantity === 'number'
+    if (!hasActual && !hasRemaining) {
+      return fail('Bitte Restmenge oder bereits abgefüllte Menge angeben.')
+    }
+
+    const actualQuantity = hasActual ? Number(input.actualQuantity) : order.quantity - Number(input.remainingQuantity)
+    if (!Number.isFinite(actualQuantity) || actualQuantity < 0) {
+      return fail('IST-Menge darf nicht negativ sein.')
+    }
+    if (actualQuantity > order.quantity) {
+      return fail('IST-Menge darf Soll-Menge nicht überschreiten.')
+    }
+
+    const now = new Date()
+    const nowLocal = toDateTimeLocal(now)
+    const remaining = Math.max(order.quantity - actualQuantity, 0)
+    const durationMs = order.lineRate > 0 ? (remaining / order.lineRate) * 60_000 : 0
+    const fillEnd = toDateTimeLocal(new Date(now.getTime() + durationMs))
+    const nextStatus: Order['status'] = remaining <= 0 ? 'done' : 'running'
+
+    commit((prev) => {
+      const updatedOrders = prev.orders.map((item) =>
+        item.id === orderId
+          ? {
+              ...item,
+              actualQuantity,
+              fillStart: nowLocal,
+              fillEnd,
+              status: nextStatus,
+            }
+          : item,
+      )
+
+      const reflown = withReflowForLine(updatedOrders, order.lineId)
+
+      return {
+        ...prev,
+        orders: reflown,
+        meta: { ...prev.meta, lastError: null },
+        history: [
+          ...prev.history,
+          historyMessage(
+            'IST',
+            `IST-Update für ${order.orderNo}: ${actualQuantity}/${order.quantity} abgefüllt, FillEnd neu ${fillEnd}.`,
+            { orderNo: order.orderNo, productId: order.productId },
+          ),
+        ],
+      }
+    })
     return { ok: true }
   }
+
 
   const updateMasterdata: StoreContextValue['updateMasterdata'] = (masterdata) => {
     const sanitized = sanitizeMasterdata(masterdata)
@@ -524,17 +598,27 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   const importData: StoreContextValue['importData'] = (rawJson) => {
     try {
       const parsed = mergeState(JSON.parse(rawJson) as Partial<AppState>)
-      commit((prev) => ({
-        ...parsed,
-        meta: {
-          ...parsed.meta,
-          usedOrderNumbers: Array.from(
-            new Set([...(prev.meta.usedOrderNumbers ?? []), ...(parsed.meta.usedOrderNumbers ?? [])]),
-          ),
-          lastError: null,
-        },
-        history: [...parsed.history, historyMessage('IMPORT', 'Datenimport durchgeführt.')],
-      }))
+      commit((prev) => {
+        const parsedOrderNumbers = parsed.orders.map((order) => order.orderNo)
+        const prevOrderNumbers = prev.orders.map((order) => order.orderNo)
+
+        return {
+          ...parsed,
+          meta: {
+            ...parsed.meta,
+            usedOrderNumbers: Array.from(
+              new Set([
+                ...(prev.meta.usedOrderNumbers ?? []),
+                ...(parsed.meta.usedOrderNumbers ?? []),
+                ...prevOrderNumbers,
+                ...parsedOrderNumbers,
+              ]),
+            ),
+            lastError: null,
+          },
+          history: [...parsed.history, historyMessage('IMPORT', 'Datenimport durchgeführt.')],
+        }
+      })
       return { ok: true }
     } catch {
       return fail('Import fehlgeschlagen: Ungültiges JSON.')
