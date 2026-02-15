@@ -45,7 +45,7 @@ const EmptyColumn = memo(function EmptyColumn() {
 })
 
 function DashboardPage() {
-  const { state, createOrder, editOrder, reorderLineOrders, assignOrder, moveOrder, reportIst } = useAppStore()
+  const { state, createOrder, editOrder, reorderLineOrders, assignOrder, moveOrder } = useAppStore()
   const [search, setSearch] = useState('')
   const [orderNo, setOrderNo] = useState('')
   const [quantity, setQuantity] = useState('')
@@ -282,8 +282,6 @@ function DashboardPage() {
                       onEdit={(updates) => editOrder(order.id, updates)}
                       onAssign={(rwId) => assignOrder(order.id, rwId)}
                       onStatusChange={(status) => moveOrder(order.id, status)}
-                      onIstActual={(actualQuantity) => reportIst(order.id, { actualQuantity })}
-                      onIstRemaining={(remainingQuantity) => reportIst(order.id, { remainingQuantity })}
                     />
                   ))}
                 </div>
@@ -386,8 +384,6 @@ const OrderCard = memo(function OrderCard({
   onEdit,
   onAssign,
   onStatusChange,
-  onIstActual,
-  onIstRemaining,
 }: {
   order: StoreOrder
   products: StoreState['masterdata']['products']
@@ -399,42 +395,54 @@ const OrderCard = memo(function OrderCard({
   onEdit: (updates: Partial<Pick<StoreOrder, 'quantity' | 'packageSize' | 'productId'>>) => void
   onAssign: (rwId: string) => void
   onStatusChange: (status: StatusValue) => void
-  onIstActual: (actualQuantity: number) => void
-  onIstRemaining: (remainingQuantity: number) => void
 }) {
   const [selectedRw, setSelectedRw] = useState(assignedRwId ?? stirrers[0]?.rwId ?? '')
-  const [actualInput, setActualInput] = useState(order.actualQuantity ? String(order.actualQuantity) : '')
-  const [remainingInput, setRemainingInput] = useState('')
+  const [expanded, setExpanded] = useState(false)
   const [renderTs] = useState(() => Date.now())
   const lockDrag = (order.status === 'made' || order.status === 'running') && (!order.fillEnd || Date.parse(order.fillEnd) > renderTs)
 
   return (
-    <div onDragOver={(event) => event.preventDefault()} onDrop={onDrop} className="rounded border border-slate-700 bg-slate-950/80 p-3 text-sm">
-      <div draggable={!lockDrag} onDragStart={onDragStart} onDragEnd={onDragEnd} className={`mb-2 rounded px-2 py-1 text-xs text-slate-300 ${lockDrag ? 'cursor-not-allowed bg-red-900/50' : 'cursor-grab bg-slate-800'}`}>
-        {lockDrag ? '🔒 made/running: Umhängen gesperrt bis FillEnd' : '↕ Reihenfolge ändern / auf RW ziehen'}
-      </div>
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <p className="font-semibold text-slate-100">{order.orderNo} · {order.title}</p>
-        <span className="rounded bg-slate-800 px-2 py-1 text-xs text-cyan-300">{order.status}</span>
-      </div>
-      <p className="text-xs text-slate-400">Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}</p>
-      {order.manualStartWarning ? <p className="mt-1 inline-flex rounded bg-amber-500/20 px-2 py-1 text-[11px] text-amber-200">⚠ Manuelle Startzeit lag vor möglichem Start</p> : null}
-      <p className="text-xs text-amber-300">RW: {assignedRwId ?? 'nicht zugewiesen'}</p>
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        <label className="text-xs text-slate-300">Status<select value={order.status} onChange={(event) => onStatusChange(event.target.value as StatusValue)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        <div className="text-xs text-slate-300">IST {order.actualQuantity}/{order.quantity}</div>
-        <label className="text-xs text-slate-300">Menge<input type="number" min={1} value={order.quantity} onChange={(event) => { const next = Number(event.target.value); if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next }) }} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
-        <label className="text-xs text-slate-300">Gebinde<select value={order.packageSize} onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        <label className="col-span-2 text-xs text-slate-300">Produkt<select value={order.productId} onChange={(event) => onEdit({ productId: event.target.value })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{products.map((product) => <option key={product.productId} value={product.productId}>{product.name} ({product.articleNo})</option>)}</select></label>
-        <label className="text-xs text-slate-300">already filled<input type="number" min={0} value={actualInput} onChange={(event) => setActualInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
-        <button type="button" onClick={() => { const next = Number(actualInput); if (!Number.isNaN(next)) onIstActual(next) }} className="rounded bg-cyan-600 px-2 py-1 text-xs font-semibold">IST übernehmen</button>
-        <label className="text-xs text-slate-300">Restmenge<input type="number" min={0} value={remainingInput} onChange={(event) => setRemainingInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
-        <button type="button" onClick={() => { const next = Number(remainingInput); if (!Number.isNaN(next)) onIstRemaining(next) }} className="rounded bg-violet-600 px-2 py-1 text-xs font-semibold">Rest übernehmen</button>
-        <div className="col-span-2 grid grid-cols-3 items-end gap-2">
-          <label className="col-span-2 text-xs text-slate-300">RW direkt<select value={selectedRw} onChange={(event) => setSelectedRw(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{stirrers.map((rw) => <option key={rw.rwId} value={rw.rwId}>{rw.name} ({rw.rwId})</option>)}</select></label>
-          <button type="button" className="rounded bg-amber-400 px-2 py-1 text-xs font-semibold text-slate-900" onClick={() => onAssign(selectedRw)}>Assign</button>
+    <div onDragOver={(event) => event.preventDefault()} onDrop={onDrop} className="rounded border border-slate-700 bg-slate-950/80 p-2 text-sm">
+      <div className="flex items-center gap-2">
+        <div
+          draggable={!lockDrag}
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          className={`rounded px-2 py-1 text-xs text-slate-300 ${lockDrag ? 'cursor-not-allowed bg-red-900/50' : 'cursor-grab bg-slate-800'}`}
+          title={lockDrag ? 'made/running: Umhängen gesperrt bis FillEnd' : 'Reihenfolge ändern / auf RW ziehen'}
+        >
+          ↕
         </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-semibold text-slate-100">{order.orderNo}</p>
+          <p className="truncate text-xs text-slate-400">{order.title} · {order.quantity} L</p>
+        </div>
+        <span className="rounded bg-slate-800 px-2 py-1 text-xs text-cyan-300">{order.status}</span>
+        <button
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-200"
+          aria-label={expanded ? 'Details einklappen' : 'Details ausklappen'}
+        >
+          {expanded ? '▴' : '▾'}
+        </button>
       </div>
+      {expanded ? (
+        <div className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-700 pt-2">
+          <p className="col-span-2 text-xs text-slate-400">Artikelnummer: {order.articleNo}</p>
+          <p className="col-span-2 text-xs text-slate-400">Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}</p>
+          {order.manualStartWarning ? <p className="col-span-2 inline-flex rounded bg-amber-500/20 px-2 py-1 text-[11px] text-amber-200">⚠ Manuelle Startzeit lag vor möglichem Start</p> : null}
+          <p className="col-span-2 text-xs text-amber-300">RW: {assignedRwId ?? 'nicht zugewiesen'}</p>
+          <label className="text-xs text-slate-300">Status<select value={order.status} onChange={(event) => onStatusChange(event.target.value as StatusValue)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="text-xs text-slate-300">Menge<input type="number" min={1} value={order.quantity} onChange={(event) => { const next = Number(event.target.value); if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next }) }} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
+          <label className="text-xs text-slate-300">Gebinde<select value={order.packageSize} onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+          <label className="col-span-2 text-xs text-slate-300">Produkt<select value={order.productId} onChange={(event) => onEdit({ productId: event.target.value })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{products.map((product) => <option key={product.productId} value={product.productId}>{product.name} ({product.articleNo})</option>)}</select></label>
+          <div className="col-span-2 grid grid-cols-3 items-end gap-2">
+            <label className="col-span-2 text-xs text-slate-300">RW direkt<select value={selectedRw} onChange={(event) => setSelectedRw(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{stirrers.map((rw) => <option key={rw.rwId} value={rw.rwId}>{rw.name} ({rw.rwId})</option>)}</select></label>
+            <button type="button" className="rounded bg-amber-400 px-2 py-1 text-xs font-semibold text-slate-900" onClick={() => onAssign(selectedRw)}>Assign</button>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 })
