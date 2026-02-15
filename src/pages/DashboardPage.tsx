@@ -33,7 +33,6 @@ interface TimelineBlock {
   label: string
   start: string
   end: string
-  tone: 'solid' | 'ghost'
 }
 
 interface LineGanttRow {
@@ -52,6 +51,7 @@ const EmptyColumn = memo(function EmptyColumn() {
 
 function DashboardPage() {
   const { state, createOrder, editOrder, reorderLineOrders, assignOrder, moveOrder, reportIst } = useAppStore()
+
   const [search, setSearch] = useState('')
   const [orderNo, setOrderNo] = useState('')
   const [quantity, setQuantity] = useState('')
@@ -120,7 +120,10 @@ function DashboardPage() {
           if (!window) return null
           return { order, window }
         })
-        .filter((entry): entry is { order: StoreOrder; window: NonNullable<ReturnType<typeof getOrderRwWindow>> } => Boolean(entry))
+        .filter(
+          (entry): entry is { order: StoreOrder; window: NonNullable<ReturnType<typeof getOrderRwWindow>> } =>
+            Boolean(entry),
+        )
         .sort((a, b) => a.window.makeStart.localeCompare(b.window.makeStart)),
     }))
   }, [state.assignments, state.masterdata, state.orders])
@@ -129,17 +132,17 @@ function DashboardPage() {
     const byLineId = new Map<string, TimelineBlock[]>()
 
     boardColumns.forEach((column) => {
-      const entries = column.orders
-        .filter((order) => Boolean(order.fillStart && order.fillEnd))
-        .map((order) => ({
-          id: order.id,
-          label: order.orderNo,
-          start: order.fillStart as string,
-          end: order.fillEnd as string,
-          tone: 'solid' as const,
-        }))
-
-      byLineId.set(column.lineId, entries)
+      byLineId.set(
+        column.lineId,
+        column.orders
+          .filter((order) => Boolean(order.fillStart && order.fillEnd))
+          .map((order) => ({
+            id: order.id,
+            label: order.orderNo,
+            start: order.fillStart as string,
+            end: order.fillEnd as string,
+          })),
+      )
     })
 
     return byLineId
@@ -156,7 +159,6 @@ function DashboardPage() {
           label: order.orderNo,
           start: window.makeStart,
           end: window.fillEnd,
-          tone: 'solid' as const,
         })),
       )
     })
@@ -166,8 +168,12 @@ function DashboardPage() {
 
   const timelineRange = useMemo(() => {
     const values = [
-      ...Array.from(lineEvents.values()).flatMap((events) => events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)])),
-      ...Array.from(rwEvents.values()).flatMap((events) => events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)])),
+      ...Array.from(lineEvents.values()).flatMap((events) =>
+        events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)]),
+      ),
+      ...Array.from(rwEvents.values()).flatMap((events) =>
+        events.flatMap((entry) => [parseMs(entry.start), parseMs(entry.end)]),
+      ),
     ].filter(Number.isFinite)
 
     if (!values.length) return null
@@ -175,7 +181,12 @@ function DashboardPage() {
   }, [lineEvents, rwEvents])
 
   const lineGanttRows = useMemo<LineGanttRow[]>(
-    () => boardColumns.map((column) => ({ lineId: column.lineId, lineName: column.lineName, entries: lineEvents.get(column.lineId) ?? [] })),
+    () =>
+      boardColumns.map((column) => ({
+        lineId: column.lineId,
+        lineName: column.lineName,
+        entries: lineEvents.get(column.lineId) ?? [],
+      })),
     [boardColumns, lineEvents],
   )
 
@@ -237,39 +248,109 @@ function DashboardPage() {
         <h1 className="text-2xl font-bold text-cyan-300">Auftrag anlegen</h1>
       </div>
 
-      <form onSubmit={onCreateOrder} className="grid gap-3 rounded-xl border border-slate-700 bg-slate-800 p-5 md:grid-cols-2">
-        <label className="text-sm text-slate-300">Produktsuche (Name / Artikelnummer)
-          <input list="product-options" className="w-full rounded bg-slate-700 px-3 py-2" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="z. B. Standardprodukt oder ART-001" />
-          <datalist id="product-options">{searchMatches.map((product) => <option key={product.productId} value={`${product.name} (${product.articleNo})`} />)}</datalist>
-        </label>
-        <label className="text-sm text-slate-300">Menge
-          <input type="number" min={1} className="w-full rounded bg-slate-700 px-3 py-2" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
-        </label>
-        <label className="text-sm text-slate-300">Gebinde
-          <select className="w-full rounded bg-slate-700 px-3 py-2" value={packageSize} onChange={(event) => setPackageSize(event.target.value as PackageValue)}>
-            {packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </label>
-        <label className="text-sm text-slate-300">Linie
-          <select className="w-full rounded bg-slate-700 px-3 py-2" value={lineId} onChange={(event) => setLineId(event.target.value)}>
-            {state.masterdata.lines.map((line) => <option key={line.lineId} value={line.lineId}>{line.name}</option>)}
-          </select>
-        </label>
-        <label className="text-sm text-slate-300">Optionale Auftragsnummer
-          <input className="w-full rounded bg-slate-700 px-3 py-2" value={orderNo} onChange={(event) => setOrderNo(event.target.value)} />
-        </label>
-        <label className="text-sm text-slate-300 md:col-span-2">
-          <span className="mb-2 flex items-center gap-2">
-            <input type="checkbox" checked={manualStartEnabled} onChange={(event) => setManualStartEnabled(event.target.checked)} />
-            Manuelle Startzeit setzen (optional)
-          </span>
-          {manualStartEnabled ? <input type="datetime-local" className="w-full rounded bg-slate-700 px-3 py-2" value={manualStartTime} onChange={(event) => setManualStartTime(event.target.value)} /> : <p className="text-xs text-slate-400">Ohne manuelle Startzeit wird automatisch ans Linienende angehängt.</p>}
-        </label>
-        <label className="text-sm text-slate-300">Startposition
-          <input className="w-full rounded bg-slate-700 px-3 py-2" value={startPosition} onChange={(event) => setStartPosition(event.target.value)} />
+      <form
+        onSubmit={onCreateOrder}
+        className="grid gap-3 rounded-xl border border-slate-700 bg-slate-800 p-5 md:grid-cols-2"
+      >
+        <label className="text-sm text-slate-300">
+          Produktsuche (Name / Artikelnummer)
+          <input
+            list="product-options"
+            className="w-full rounded bg-slate-700 px-3 py-2"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="z. B. Standardprodukt oder ART-001"
+          />
+          <datalist id="product-options">
+            {searchMatches.map((product) => (
+              <option key={product.productId} value={`${product.name} (${product.articleNo})`} />
+            ))}
+          </datalist>
         </label>
 
-        <button type="submit" className="rounded bg-cyan-500 px-3 py-2 font-semibold text-slate-900 md:col-span-2">Auftrag speichern</button>
+        <label className="text-sm text-slate-300">
+          Menge
+          <input
+            type="number"
+            min={1}
+            className="w-full rounded bg-slate-700 px-3 py-2"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </label>
+
+        <label className="text-sm text-slate-300">
+          Gebinde
+          <select
+            className="w-full rounded bg-slate-700 px-3 py-2"
+            value={packageSize}
+            onChange={(event) => setPackageSize(event.target.value as PackageValue)}
+          >
+            {packageOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="text-sm text-slate-300">
+          Linie
+          <select
+            className="w-full rounded bg-slate-700 px-3 py-2"
+            value={lineId}
+            onChange={(event) => setLineId(event.target.value)}
+          >
+            {state.masterdata.lines.map((line) => (
+              <option key={line.lineId} value={line.lineId}>
+                {line.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="text-sm text-slate-300">
+          Optionale Auftragsnummer
+          <input
+            className="w-full rounded bg-slate-700 px-3 py-2"
+            value={orderNo}
+            onChange={(event) => setOrderNo(event.target.value)}
+          />
+        </label>
+
+        <label className="text-sm text-slate-300 md:col-span-2">
+          <span className="mb-2 flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={manualStartEnabled}
+              onChange={(event) => setManualStartEnabled(event.target.checked)}
+            />
+            Manuelle Startzeit setzen (optional)
+          </span>
+          {manualStartEnabled ? (
+            <input
+              type="datetime-local"
+              className="w-full rounded bg-slate-700 px-3 py-2"
+              value={manualStartTime}
+              onChange={(event) => setManualStartTime(event.target.value)}
+            />
+          ) : (
+            <p className="text-xs text-slate-400">Ohne manuelle Startzeit wird automatisch ans Linienende angehängt.</p>
+          )}
+        </label>
+
+        <label className="text-sm text-slate-300">
+          Startposition
+          <input
+            className="w-full rounded bg-slate-700 px-3 py-2"
+            value={startPosition}
+            onChange={(event) => setStartPosition(event.target.value)}
+          />
+        </label>
+
+        <button type="submit" className="rounded bg-cyan-500 px-3 py-2 font-semibold text-slate-900 md:col-span-2">
+          Auftrag speichern
+        </button>
       </form>
 
       <div className="space-y-6">
@@ -277,26 +358,35 @@ function DashboardPage() {
           <h2 className="mb-3 text-xl font-semibold">Linien Board</h2>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {boardColumns.map((lineColumn) => (
-              <article key={lineColumn.lineId} className="rounded border border-slate-700 bg-slate-900/70 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropCard(event, lineColumn)}>
+              <article
+                key={lineColumn.lineId}
+                className="rounded border border-slate-700 bg-slate-900/70 p-3"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => onDropCard(event, lineColumn)}
+              >
                 <h3 className="font-semibold text-cyan-300">{lineColumn.lineName}</h3>
                 <div className="mt-3 max-h-[22rem] space-y-2 overflow-y-auto pr-1">
-                  {lineColumn.orders.length === 0 ? <EmptyColumn /> : lineColumn.orders.map((order) => (
-                    <OrderCard
-                      key={order.id}
-                      order={order}
-                      products={state.masterdata.products}
-                      stirrers={state.masterdata.stirrers}
-                      assignedRwId={assignmentByOrderId.get(order.id)}
-                      onDragStart={() => setDragOrderId(order.id)}
-                      onDragEnd={() => setDragOrderId(null)}
-                      onDrop={(event) => onDropCard(event, lineColumn, order.id)}
-                      onEdit={(updates) => editOrder(order.id, updates)}
-                      onAssign={(rwId) => assignOrder(order.id, rwId)}
-                      onStatusChange={(status) => moveOrder(order.id, status)}
-                      onIstActual={(actualQuantity) => reportIst(order.id, { actualQuantity })}
-                      onIstRemaining={(remainingQuantity) => reportIst(order.id, { remainingQuantity })}
-                    />
-                  ))}
+                  {lineColumn.orders.length === 0 ? (
+                    <EmptyColumn />
+                  ) : (
+                    lineColumn.orders.map((order) => (
+                      <OrderCard
+                        key={order.id}
+                        order={order}
+                        products={state.masterdata.products}
+                        stirrers={state.masterdata.stirrers}
+                        assignedRwId={assignmentByOrderId.get(order.id)}
+                        onDragStart={() => setDragOrderId(order.id)}
+                        onDragEnd={() => setDragOrderId(null)}
+                        onDrop={(event) => onDropCard(event, lineColumn, order.id)}
+                        onEdit={(updates) => editOrder(order.id, updates)}
+                        onAssign={(rwId) => assignOrder(order.id, rwId)}
+                        onStatusChange={(status) => moveOrder(order.id, status)}
+                        onIstActual={(actualQuantity) => reportIst(order.id, { actualQuantity })}
+                        onIstRemaining={(remainingQuantity) => reportIst(order.id, { remainingQuantity })}
+                      />
+                    ))
+                  )}
                 </div>
               </article>
             ))}
@@ -312,8 +402,15 @@ function DashboardPage() {
           <h2 className="mb-3 text-xl font-semibold">RW-Board (unten)</h2>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {rwColumns.map(({ rw, entries }) => (
-              <article key={rw.rwId} className="rounded border border-slate-700 bg-slate-900/70 p-3" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
-                <h3 className="font-semibold text-amber-300">{rw.name} ({rw.rwId})</h3>
+              <article
+                key={rw.rwId}
+                className="rounded border border-slate-700 bg-slate-900/70 p-3"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => onDropRw(event, rw.rwId)}
+              >
+                <h3 className="font-semibold text-amber-300">
+                  {rw.name} ({rw.rwId})
+                </h3>
                 <p className="mt-1 text-xs text-slate-400">Drop Auftrag hier für Assignment.</p>
                 <SingleTrackTimeline
                   title="RWTimeline"
@@ -323,12 +420,23 @@ function DashboardPage() {
                   onDrop={(event) => onDropRw(event, rw.rwId)}
                 />
                 <div className="mt-3 space-y-2">
-                  {entries.length === 0 ? <p className="text-sm text-slate-500">Keine Belegung.</p> : entries.map(({ order, window }) => (
-                    <div key={order.id} className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs" onDragOver={(event) => event.preventDefault()} onDrop={(event) => onDropRw(event, rw.rwId)}>
-                      <p className="font-semibold text-slate-100">{order.orderNo}</p>
-                      <p className="text-slate-400">Sperrbereich: {window.makeStart} → {window.fillEnd}</p>
-                    </div>
-                  ))}
+                  {entries.length === 0 ? (
+                    <p className="text-sm text-slate-500">Keine Belegung.</p>
+                  ) : (
+                    entries.map(({ order, window }) => (
+                      <div
+                        key={order.id}
+                        className="rounded border border-slate-700 bg-slate-950/70 p-2 text-xs"
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => onDropRw(event, rw.rwId)}
+                      >
+                        <p className="font-semibold text-slate-100">{order.orderNo}</p>
+                        <p className="text-slate-400">
+                          Sperrbereich: {window.makeStart} → {window.fillEnd}
+                        </p>
+                      </div>
+                    ))
+                  )}
                 </div>
               </article>
             ))}
@@ -377,7 +485,7 @@ const SingleTrackTimeline = memo(function SingleTrackTimeline({
           return (
             <div
               key={entry.id}
-              className={`absolute top-1 h-8 overflow-hidden rounded px-1 text-[10px] ${entry.tone === 'ghost' ? 'border border-dashed border-cyan-300 bg-cyan-300/20 text-cyan-200' : 'bg-amber-500/60 text-slate-900'}`}
+              className="absolute top-1 h-8 overflow-hidden rounded bg-amber-500/60 px-1 text-[10px] text-slate-900"
               style={{ left: `${left}%`, width: `${Math.min(blockWidth, 100 - left)}%` }}
               title={`${entry.label}: ${entry.start} → ${entry.end}`}
             >
@@ -390,7 +498,13 @@ const SingleTrackTimeline = memo(function SingleTrackTimeline({
   )
 })
 
-const LineGanttPanel = memo(function LineGanttPanel({ rows, range }: { rows: LineGanttRow[]; range: TimelineRange }) {
+const LineGanttPanel = memo(function LineGanttPanel({
+  rows,
+  range,
+}: {
+  rows: LineGanttRow[]
+  range: TimelineRange
+}) {
   if (!range) {
     return <p className="text-sm text-slate-400">Noch keine Linienevents für den Zeitstrahl vorhanden.</p>
   }
@@ -400,26 +514,33 @@ const LineGanttPanel = memo(function LineGanttPanel({ rows, range }: { rows: Lin
   return (
     <div className="space-y-3">
       {rows.map((row) => (
-        <div key={row.lineId} className="grid gap-2 rounded border border-slate-700 bg-slate-950/40 p-2 md:grid-cols-[8rem_1fr] md:items-center">
+        <div
+          key={row.lineId}
+          className="grid gap-2 rounded border border-slate-700 bg-slate-950/40 p-2 md:grid-cols-[8rem_1fr] md:items-center"
+        >
           <p className="text-sm font-semibold text-cyan-300">{row.lineName}</p>
           <div className="relative h-12 rounded border border-slate-700 bg-slate-950/70 p-1">
-            {row.entries.length === 0 ? <p className="px-2 py-2 text-[11px] text-slate-500">Keine Events.</p> : row.entries.map((entry) => {
-              const start = parseMs(entry.start)
-              const end = parseMs(entry.end)
-              if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
-              const left = ((start - range.min) / width) * 100
-              const blockWidth = Math.max(((end - start) / width) * 100, 2)
-              return (
-                <div
-                  key={entry.id}
-                  className="absolute top-1 h-8 overflow-hidden rounded bg-cyan-500/70 px-1 text-[10px] font-semibold text-slate-950"
-                  style={{ left: `${left}%`, width: `${Math.min(blockWidth, 100 - left)}%` }}
-                  title={`${entry.label}: ${entry.start} → ${entry.end}`}
-                >
-                  {entry.label}
-                </div>
-              )
-            })}
+            {row.entries.length === 0 ? (
+              <p className="px-2 py-2 text-[11px] text-slate-500">Keine Events.</p>
+            ) : (
+              row.entries.map((entry) => {
+                const start = parseMs(entry.start)
+                const end = parseMs(entry.end)
+                if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null
+                const left = ((start - range.min) / width) * 100
+                const blockWidth = Math.max(((end - start) / width) * 100, 2)
+                return (
+                  <div
+                    key={entry.id}
+                    className="absolute top-1 h-8 overflow-hidden rounded bg-cyan-500/70 px-1 text-[10px] font-semibold text-slate-950"
+                    style={{ left: `${left}%`, width: `${Math.min(blockWidth, 100 - left)}%` }}
+                    title={`${entry.label}: ${entry.start} → ${entry.end}`}
+                  >
+                    {entry.label}
+                  </div>
+                )
+              })
+            )}
           </div>
         </div>
       ))}
@@ -458,33 +579,168 @@ const OrderCard = memo(function OrderCard({
   const [actualInput, setActualInput] = useState(order.actualQuantity ? String(order.actualQuantity) : '')
   const [remainingInput, setRemainingInput] = useState('')
   const [renderTs] = useState(() => Date.now())
-  const lockDrag = (order.status === 'made' || order.status === 'running') && (!order.fillEnd || Date.parse(order.fillEnd) > renderTs)
+  const lockDrag =
+    (order.status === 'made' || order.status === 'running') &&
+    (!order.fillEnd || Date.parse(order.fillEnd) > renderTs)
 
   return (
-    <div onDragOver={(event) => event.preventDefault()} onDrop={onDrop} className="rounded border border-slate-700 bg-slate-950/80 p-3 text-sm">
-      <div draggable={!lockDrag} onDragStart={onDragStart} onDragEnd={onDragEnd} className={`mb-2 rounded px-2 py-1 text-xs text-slate-300 ${lockDrag ? 'cursor-not-allowed bg-red-900/50' : 'cursor-grab bg-slate-800'}`}>
+    <div
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
+      className="rounded border border-slate-700 bg-slate-950/80 p-3 text-sm"
+    >
+      <div
+        draggable={!lockDrag}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+        className={`mb-2 rounded px-2 py-1 text-xs text-slate-300 ${
+          lockDrag ? 'cursor-not-allowed bg-red-900/50' : 'cursor-grab bg-slate-800'
+        }`}
+      >
         {lockDrag ? '🔒 made/running: Umhängen gesperrt bis FillEnd' : '↕ Reihenfolge ändern / auf RW ziehen'}
       </div>
       <div className="mb-1 flex items-center justify-between gap-2">
-        <p className="font-semibold text-slate-100">{order.orderNo} · {order.title}</p>
+        <p className="font-semibold text-slate-100">
+          {order.orderNo} · {order.title}
+        </p>
         <span className="rounded bg-slate-800 px-2 py-1 text-xs text-cyan-300">{order.status}</span>
       </div>
-      <p className="text-xs text-slate-400">Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}</p>
-      {order.manualStartWarning ? <p className="mt-1 inline-flex rounded bg-amber-500/20 px-2 py-1 text-[11px] text-amber-200">⚠ Manuelle Startzeit lag vor möglichem Start</p> : null}
+      <p className="text-xs text-slate-400">
+        Fill: {order.fillStart ?? '—'} → {order.fillEnd ?? '—'}
+      </p>
+      {order.manualStartWarning ? (
+        <p className="mt-1 inline-flex rounded bg-amber-500/20 px-2 py-1 text-[11px] text-amber-200">
+          ⚠ Manuelle Startzeit lag vor möglichem Start
+        </p>
+      ) : null}
       <p className="text-xs text-amber-300">RW: {assignedRwId ?? 'nicht zugewiesen'}</p>
+
       <div className="mt-2 grid grid-cols-2 gap-2">
-        <label className="text-xs text-slate-300">Status<select value={order.status} onChange={(event) => onStatusChange(event.target.value as StatusValue)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label className="text-xs text-slate-300">
+          Status
+          <select
+            value={order.status}
+            onChange={(event) => onStatusChange(event.target.value as StatusValue)}
+            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
+          >
+            {statusOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
         <div className="text-xs text-slate-300">IST {order.actualQuantity}/{order.quantity}</div>
-        <label className="text-xs text-slate-300">Menge<input type="number" min={1} value={order.quantity} onChange={(event) => { const next = Number(event.target.value); if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next }) }} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
-        <label className="text-xs text-slate-300">Gebinde<select value={order.packageSize} onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{packageOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        <label className="col-span-2 text-xs text-slate-300">Produkt<select value={order.productId} onChange={(event) => onEdit({ productId: event.target.value })} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{products.map((product) => <option key={product.productId} value={product.productId}>{product.name} ({product.articleNo})</option>)}</select></label>
-        <label className="text-xs text-slate-300">already filled<input type="number" min={0} value={actualInput} onChange={(event) => setActualInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
-        <button type="button" onClick={() => { const next = Number(actualInput); if (!Number.isNaN(next)) onIstActual(next) }} className="rounded bg-cyan-600 px-2 py-1 text-xs font-semibold">IST übernehmen</button>
-        <label className="text-xs text-slate-300">Restmenge<input type="number" min={0} value={remainingInput} onChange={(event) => setRemainingInput(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1" /></label>
-        <button type="button" onClick={() => { const next = Number(remainingInput); if (!Number.isNaN(next)) onIstRemaining(next) }} className="rounded bg-violet-600 px-2 py-1 text-xs font-semibold">Rest übernehmen</button>
+
+        <label className="text-xs text-slate-300">
+          Menge
+          <input
+            type="number"
+            min={1}
+            value={order.quantity}
+            onChange={(event) => {
+              const next = Number(event.target.value)
+              if (!Number.isNaN(next) && next > 0) onEdit({ quantity: next })
+            }}
+            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
+          />
+        </label>
+
+        <label className="text-xs text-slate-300">
+          Gebinde
+          <select
+            value={order.packageSize}
+            onChange={(event) => onEdit({ packageSize: event.target.value as PackageValue })}
+            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
+          >
+            {packageOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="col-span-2 text-xs text-slate-300">
+          Produkt
+          <select
+            value={order.productId}
+            onChange={(event) => onEdit({ productId: event.target.value })}
+            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
+          >
+            {products.map((product) => (
+              <option key={product.productId} value={product.productId}>
+                {product.name} ({product.articleNo})
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="text-xs text-slate-300">
+          already filled
+          <input
+            type="number"
+            min={0}
+            value={actualInput}
+            onChange={(event) => setActualInput(event.target.value)}
+            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            const next = Number(actualInput)
+            if (!Number.isNaN(next)) onIstActual(next)
+          }}
+          className="rounded bg-cyan-600 px-2 py-1 text-xs font-semibold"
+        >
+          IST übernehmen
+        </button>
+
+        <label className="text-xs text-slate-300">
+          Restmenge
+          <input
+            type="number"
+            min={0}
+            value={remainingInput}
+            onChange={(event) => setRemainingInput(event.target.value)}
+            className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            const next = Number(remainingInput)
+            if (!Number.isNaN(next)) onIstRemaining(next)
+          }}
+          className="rounded bg-violet-600 px-2 py-1 text-xs font-semibold"
+        >
+          Rest übernehmen
+        </button>
+
         <div className="col-span-2 grid grid-cols-3 items-end gap-2">
-          <label className="col-span-2 text-xs text-slate-300">RW direkt<select value={selectedRw} onChange={(event) => setSelectedRw(event.target.value)} className="mt-1 w-full rounded bg-slate-700 px-2 py-1">{stirrers.map((rw) => <option key={rw.rwId} value={rw.rwId}>{rw.name} ({rw.rwId})</option>)}</select></label>
-          <button type="button" className="rounded bg-amber-400 px-2 py-1 text-xs font-semibold text-slate-900" onClick={() => onAssign(selectedRw)}>Assign</button>
+          <label className="col-span-2 text-xs text-slate-300">
+            RW direkt
+            <select
+              value={selectedRw}
+              onChange={(event) => setSelectedRw(event.target.value)}
+              className="mt-1 w-full rounded bg-slate-700 px-2 py-1"
+            >
+              {stirrers.map((rw) => (
+                <option key={rw.rwId} value={rw.rwId}>
+                  {rw.name} ({rw.rwId})
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="rounded bg-amber-400 px-2 py-1 text-xs font-semibold text-slate-900"
+            onClick={() => onAssign(selectedRw)}
+          >
+            Assign
+          </button>
         </div>
       </div>
     </div>
