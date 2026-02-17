@@ -13,3 +13,15 @@ Dieses Repository enthält die Grundlagen für das **Rührwerk Plan System (RPS)
 - Deterministische Planung für Linien und Rührwerke.
 - Conflict-free Blöcke durch Ripple + Repair.
 - UI als reiner Renderer mit Intents zum Planner-Core.
+
+## Tests lokal ausführen
+
+```bash
+npm test
+```
+
+Der Test-Command kompiliert den Planner-Core + Tests mit TypeScript (`tsc -p tsconfig.test.json`) und führt danach die Unit-Tests aus (`node --test .tmp-test/tests/plannerCore.test.js`).
+
+## CI
+
+GitHub Actions führt auf Push und Pull-Requests ebenfalls `npm test` aus (`.github/workflows/ci.yml`).
