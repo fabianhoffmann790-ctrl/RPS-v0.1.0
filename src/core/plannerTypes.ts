@@ -1,73 +1,70 @@
-export type Status = 'PLANNED' | 'IN_PROGRESS' | 'DONE'
+export type JobStatus = 'PLANNED' | 'IN_PROGRESS' | 'DONE'
 
-export interface Job {
-  id: string
-  lineId: string
-  qtyL: number
-  lineRateLPerMin: number
-  status: Status
-  rwId?: string
-  sequence?: number
-  startMin?: number
-  endMin?: number
-}
-
-export interface MasterData {
-  dayStartMin: number
-  snapGridMin: number
-  lineIds: string[]
-  rwIds: string[]
-}
-
-export type BlockType = 'LINE_FILL' | 'RW_SUPPLY'
-
-export interface Block {
-  id: string
-  type: BlockType
-  resourceId: string
+export interface PlannerJob {
   jobId: string
-  startMin: number
-  endMin: number
+  productId: string
+  qtyL: number
+  lineId: string
+  rwId?: string
+  status: JobStatus
+  createdAt: number
+  sequence?: number
+  requestedStartTs?: number
+  startTs?: number
+  endTs?: number
+}
+
+export interface PlannerMasterData {
+  dayStartTs: number
+  snapGridMin: number
+  lineRateLPerMin: Record<string, number>
+}
+
+export type PlannerBlockType = 'LINE_FILL' | 'RW_SUPPLY'
+export type PlannerLaneType = 'LINE' | 'RW'
+
+export interface PlannerBlock {
+  blockId: string
+  type: PlannerBlockType
+  laneType: PlannerLaneType
+  laneId: string
+  startTs: number
+  endTs: number
+  jobId: string
 }
 
 export interface PlannerResult {
-  jobs: Job[]
-  lineBlocks: Block[]
-  rwBlocks: Block[]
+  jobs: PlannerJob[]
+  blocks: PlannerBlock[]
 }
 
-export interface AddJobIntentPayload {
+export interface AddJobIntent {
   type: 'ADD_JOB'
-  job: Job
+  job: PlannerJob
 }
 
-export interface MoveJobWithinLineIntentPayload {
+export interface MoveJobWithinLineIntent {
   type: 'MOVE_JOB_WITHIN_LINE'
   jobId: string
-  targetIndex: number
+  newStartTs: number
 }
 
-export interface MoveJobToLineIntentPayload {
+export interface MoveJobToLineIntent {
   type: 'MOVE_JOB_TO_LINE'
   jobId: string
   targetLineId: string
 }
 
-export interface AssignRwIntentPayload {
+export interface AssignRwIntent {
   type: 'ASSIGN_RW'
   jobId: string
   rwId: string
 }
 
-export interface ChangeRwIntentPayload {
+export interface ChangeRwIntent {
   type: 'CHANGE_RW'
   jobId: string
   rwId: string
 }
 
-export type IntentPayloads =
-  | AddJobIntentPayload
-  | MoveJobWithinLineIntentPayload
-  | MoveJobToLineIntentPayload
-  | AssignRwIntentPayload
-  | ChangeRwIntentPayload
+export type PlannerIntent = AddJobIntent | MoveJobWithinLineIntent | MoveJobToLineIntent | AssignRwIntent | ChangeRwIntent
